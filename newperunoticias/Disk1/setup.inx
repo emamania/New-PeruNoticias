@@ -1,0 +1,3855 @@
+<?php
+
+/**
+ * @file
+ * Administrative page callbacks for the profile module.
+ */
+
+/**
+ * Form builder to display a listing of all editable profile fields.
+ *
+ * @ingroup forms
+ * @see profile_admin_overview_submit()
+ */
+function profile_admin_overview() {
+  $result = db_query('SELECT title, name, type, category, fid, weight FROM {profile_fields} ORDER BY category, weight');
+
+  $form = array();
+  $categories = array();
+  while ($field = db_fetch_object($result)) {
+    // Collect all category information
+    $categories[] = $field->category;
+
+    // Save all field information
+    $form[$field->fid]['name'] = array('#value' => check_plain($field->name));
+    $form[$field->fid]['title'] = array('#value' => check_plain($field->title));
+    $form[$field->fid]['type'] = array('#value' => $field->type);
+    $form[$field->fid]['category'] = array('#type' => 'select', '#default_value' => $field->category, '#options' => array());
+    $form[$field->fid]['weight'] = array('#type' => 'weight', '#default_value' => $field->weight);
+    $form[$field->fid]['edit'] = array('#value' => l(t('edit'), "admin/user/profile/edit/$field->fid"));
+    $form[$field->fid]['delete'] = array('#value' => l(t('delete'), "admin/user/profile/delete/$field->fid"));
+  }
+
+  // Add the cateogory combo boxes
+  $categories = array_unique($categories);
+  foreach ($form as $fid => $field) {
+    foreach ($categories as $cat => $category) {
+      $form[$fid]['category']['#options'][$category] = $category;
+    }
+  }
+
+  // Display the submit button only when there's more than one field
+  if (count($form) > 1) {
+    $form['submit'] = array('#type' => 'submit', '#value' => t('Save configuration'));
+  }
+  else {
+    // Disable combo boxes when there isn't a submit button
+    foreach ($form as $fid => $field) {
+      unset($form[$fid]['weight']);
+      $form[$fid]['category']['#type'] = 'value';
+    }
+  }
+  $form['#tree'] = TRUE;
+
+  $addnewfields = '<h2>'. t('Add new field') .'</h2>';
+  $addnewfields .= '<ul>';
+  foreach (_profile_field_types() as $key => $value) {
+    $addnewfields .= '<li>'. l($value, "admin/user/profile/add/$key") .'</li>';
+  }
+  $addnewfields .= '</ul>';
+  $form['addnewfields'] = array('#value' => $addnewfields);
+
+  return $form;
+}
+
+/**
+ * Submit handler to update changed profile field weights and categories.
+ *
+ * @see profile_admin_overview()
+ */
+function profile_admin_overview_submit($form, &$form_state) {
+  foreach (element_children($form_state['values']) as $fid) {
+    if (is_numeric($fid)) {
+      $weight = $form_state['values'][$fid]['weight'];
+      $category = $form_state['values'][$fid]['category'];
+      if ($weight != $form[$fid]['weight']['#default_value'] || $category != $form[$fid]['category']['#default_value']) {
+        db_query("UPDATE {profile_fields} SET weight = %d, category = '%s' WHERE fid = %d", $weight, $category, $fid);
+      }
+    }
+  }
+
+  drupal_set_message(t('Profile fields have been updated.'));
+  cache_clear_all();
+  menu_rebuild();
+}
+
+/**
+ * Theme the profile field overview into a drag and drop enabled table.
+ *
+ * @ingroup themeable
+ * @see profile_admin_overview()
+ */
+function theme_profile_admin_overview($form) {
+  drupal_add_css(drupal_get_path('module', 'profile') .'/profile.css');
+  // Add javascript if there's more than one field.
+  if (isset($form['submit'])) {
+    drupal_add_js(drupal_get_path('module', 'profile') .'/profile.js');
+  }
+
+  $rows = array();
+  $categories = array();
+  $category_number = 0;
+  foreach (element_children($form) as $key) {
+    // Don't take form control structures.
+    if (array_key_exists('category', $form[$key])) {
+      $field = &$form[$key];
+      $category = $field['category']['#default_value'];
+
+      if (!isset($categories[$category])) {
+        // Category classes are given numeric IDs because there's no guarantee
+        // class names won't contain invalid characters.
+        $categories[$category] = $category_number;
+        $category_field['#attributes']['class'] = 'profile-category profile-category-'. $category_number;
+        $rows[] = array(array('data' => $category, 'colspan' => 7, 'class' => 'category'));
+        $rows[] = array('data' => array(array('data' => '<em>'. t('No fields in this category. If this category remains empty when saved, it will be removed.') .'</em>', 'colspan' => 7)), 'class' => 'category-'. $category_number .'-message category-message category-populated');
+
+        // Make it dragable only if there is more than one field
+        if (isset($form['submit'])) {
+          drupal_add_tabledrag('profile-fields', 'order', 'sibling', 'profile-weight', 'profile-weight-'. $category_number);
+          drupal_add_tabledrag('profile-fields', 'match', 'sibling', 'profile-category', 'profile-category-'. $category_number);
+        }
+        $category_number++;
+      }
+
+      // Add special drag and drop classes that group fields together.
+      $field['weight']['#attributes']['class'] = 'profile-weight profile-weight-'. $categories[$category];
+      $field['category']['#attributes']['class'] = 'profile-category profile-category-'. $categories[$category];
+
+      // Add the row
+      $row = array();
+      $row[] = drupal_render($field['title']);
+      $row[] = drupal_render($field['name']);
+      $row[] = drupal_render($field['type']);
+      if (isset($form['submit'])) {
+        $row[] = drupal_render($field['category']);
+        $row[] = drupal_render($field['weight']);
+      }
+      $row[] = drupal_render($field['edit']);
+      $row[] = drupal_render($field['delete']);
+      $rows[] = array('data' => $row, 'class' => 'draggable');
+    }
+  }
+  if (empty($rows)) {
+    $rows[] = array(array('data' => t('No fields available.'), 'colspan' => 7));
+  }
+
+  $header = array(t('Title'), t('Name'), t('Type'));
+  if (isset($form['submit'])) {
+    $header[] = t('Category');
+    $header[] = t('Weight');
+  }
+  $header[] = array('data' => t('Operations'), 'colspan' => 2);
+
+  $output = theme('table', $header, $rows, array('id' => 'profile-fields'));
+  $output .= drupal_render($form);
+
+  return $output;
+}
+
+/**
+ * Menu callback: Generate a form to add/edit a user profile field.
+ *
+ * @ingroup forms
+ * @see profile_field_form_validate()
+ * @see profile_field_form_submit()
+ */
+function profile_field_form(&$form_state, $arg = NULL) {
+  if (arg(3) == 'edit') {
+    if (is_numeric($arg)) {
+      $fid = $arg;
+
+      $edit = db_fetch_array(db_query('SELECT * FROM {profile_fields} WHERE fid = %d', $fid));
+
+      if (!$edit) {
+        drupal_not_found();
+        return;
+      }
+      drupal_set_title(t('edit %title', array('%title' => $edit['title'])));
+      $form['fid'] = array('#type' => 'value',
+        '#value' => $fid,
+      );
+      $type = $edit['type'];
+    }
+    else {
+      drupal_not_found();
+      return;
+    }
+  }
+  else {
+    $types = _profile_field_types();
+    if (!isset($types[$arg])) {
+      drupal_not_found();
+      return;
+    }
+    $type = $arg;
+    drupal_set_title(t('add new %type', array('%type' => $types[$type])));
+    $edit = array('name' => 'profile_');
+    $form['type'] = array('#type' => 'value', '#value' => $type);
+  }
+  $edit += array(
+    'category' => '',
+    'title' => '',
+    'explanation' => '',
+    'weight' => 0,
+    'page' => '',
+    'autocomplete' => '',
+    'required' => '',
+    'register' => '',
+  );
+  $form['fields'] = array('#type' => 'fieldset',
+    '#title' => t('Field settings'),
+  );
+  $form['fields']['category'] = array('#type' => 'textfield',
+    '#title' => t('Category'),
+    '#default_value' => $edit['category'],
+    '#autocomplete_path' => 'admin/user/profile/autocomplete',
+    '#description' => t('The category the new field should be part of. Categories are used to group fields logically. An example category is "Personal information".'),
+    '#required' => TRUE,
+  );
+  $form['fields']['title'] = array('#type' => 'textfield',
+    '#title' => t('Title'),
+    '#default_value' => $edit['title'],
+    '#description' => t('The title of the new field. The title will be shown to the user. An example title is "Favorite color".'),
+    '#required' => TRUE,
+  );
+  $form['fields']['name'] = array('#type' => 'textfield',
+    '#title' => t('Form name'),
+    '#default_value' => $edit['name'],
+    '#description' => t('The name of the field. The form name is not shown to the user but used internally in the HTML code and URLs.
+Unless you know what you are doing, it is highly recommended that you prefix the form name with <code>profile_</code> to avoid name clashes with other fields. Spaces or any other special characters except dash (-) and underscore (_) are not allowed. An example name is "profile_favorite_color" or perhaps just "profile_color".'),
+    '#required' => TRUE,
+  );
+  $form['fields']['explanation'] = array('#type' => 'textarea',
+    '#title' => t('Explanation'),
+    '#default_value' => $edit['explanation'],
+    '#description' => t('An optional explanation to go with the new field. The explanation will be shown to the user.'),
+  );
+  if ($type == 'selection') {
+    $form['fields']['options'] = array('#type' => 'textarea',
+      '#title' => t('Selection options'),
+      '#default_value' => isset($edit['options']) ? $edit['options'] : '',
+      '#description' => t('A list of all options. Put each option on a separate line. Example options are "red", "blue", "green", etc.'),
+    );
+  }
+  $form['fields']['visibility'] = array('#type' => 'radios',
+    '#title' => t('Visibility'),
+    '#default_value' => isset($edit['visibility']) ? $edit['visibility'] : PROFILE_PUBLIC,
+    '#options' => array(PROFILE_HIDDEN => t('Hidden profile field, only accessible by administrators, modules and themes.'), PROFILE_PRIVATE => t('Private field, content only available to privileged users.'), PROFILE_PUBLIC => t('Public field, content shown on profile page but not used on member list pages.'), PROFILE_PUBLIC_LISTINGS => t('Public field, content shown on profile page and on member list pages.')),
+  );
+  if ($type == 'selection' || $type == 'list' || $type == 'textfield') {
+    $form['fields']['page'] = array('#type' => 'textfield',
+      '#title' => t('Page title'),
+      '#default_value' => $edit['page'],
+      '#description' => t('To enable browsing this field by value, enter a title for the resulting page. The word <code>%value</code> will be substituted with the corresponding value. An example page title is "People whose favorite color is %value". This is only applicable for a public field.'),
+    );
+  }
+  else if ($type == 'checkbox') {
+    $form['fields']['page'] = array('#type' => 'textfield',
+      '#title' => t('Page title'),
+      '#default_value' => $edit['page'],
+      '#description' => t('To enable browsing this field by value, enter a title for the resulting page. An example page title is "People who are employed". This is only applicable for a public field.'),
+    );
+  }
+  $form['fields']['weight'] = array('#type' => 'weight',
+    '#title' => t('Weight'),
+    '#default_value' => $edit['weight'],
+    '#description' => t('The weights define the order in which the form fields are shown. Lighter fields "float up" towards the top of the category.'),
+  );
+  $form['fields']['autocomplete'] = array('#type' => 'checkbox',
+    '#title' => t('Form will auto-complete while user is typing.'),
+    '#default_value' => $edit['autocomplete'],
+    '#description' => t('For security, auto-complete will be disabled if the user does not have access to user profiles.'),
+  );
+  $form['fields']['required'] = array('#type' => 'checkbox',
+    '#title' => t('The user must enter a value.'),
+    '#default_value' => $edit['required'],
+  );
+  $form['fields']['register'] = array('#type' => 'checkbox',
+    '#title' => t('Visible in user registration form.'),
+    '#default_value' => $edit['register'],
+  );
+  $form['submit'] = array('#type' => 'submit',
+    '#value' => t('Save field'),
+  );
+  return $form;
+}
+
+/**
+ * Validate profile_field_form submissions.
+ */
+function profile_field_form_validate($form, &$form_state) {
+  // Validate the 'field name':
+  if (preg_match('/[^a-zA-Z0-9_-]/', $form_state['values']['name'])) {
+    form_set_error('name', t('The specified form name contains one or more illegal characters. Spaces or any other special characters except dash (-) and underscore (_) are not allowed.'));
+  }
+
+  if (in_array($form_state['values']['name'], user_fields())) {
+    form_set_error('name', t('The specified form name is reserved for use by Drupal.'));
+  }
+  // Validate the category:
+  if (!$form_state['values']['category']) {
+    form_set_error('category', t('You must enter a category.'));
+  }
+  if (strtolower($form_state['values']['category']) == 'account') {
+    form_set_error('category', t('The specified category name is reserved for use by Drupal.'));
+  }
+  $args1 = array($form_state['values']['title'], $form_state['values']['category']);
+  $args2 = array($form_state['values']['name']);
+  $query_suffix = '';
+
+  if (isset($form_state['values']['fid'])) {
+    $args1[] = $args2[] = $form_state['values']['fid'];
+    $query_suffix = ' AND fid != %d';
+  }
+
+  if (db_result(db_query("SELECT fid FROM {profile_fields} WHERE title = '%s' AND category = '%s'". $query_suffix, $args1))) {
+    form_set_error('title', t('The specified title is already in use.'));
+  }
+  if (db_result(db_query("SELECT fid FROM {profile_fields} WHERE name = '%s'". $query_suffix, $args2))) {
+    form_set_error('name', t('The specified name is already in use.'));
+  }
+  if ($form_state['values']['visibility'] == PROFILE_HIDDEN) {
+    if ($form_state['values']['required']) {
+      form_set_error('required', t('A hidden field cannot be required.'));
+    }
+    if ($form_state['values']['register']) {
+      form_set_error('register', t('A hidden field cannot be set to visible on the user registration form.'));
+    }
+  }
+}
+
+/**
+ * Process profile_field_form submissions.
+ */
+function profile_field_form_submit($form, &$form_state) {
+  if (!isset($form_state['values']['options'])) {
+    $form_state['values']['options'] = '';
+  }
+  if (!isset($form_state['values']['page'])) {
+    $form_state['values']['page'] = '';
+  }
+  if (!isset($form_state['values']['fid'])) {
+    db_query("INSERT INTO {profile_fields} (title, name, explanation, category, type, weight, required, register, visibility, autocomplete, options, page) VALUES ('%s', '%s', '%s', '%s', '%s', %d, %d, %d, %d, %d, '%s', '%s')", $form_state['values']['title'], $form_state['values']['name'], $form_state['values']['explanation'], $form_state['values']['category'], $form_state['values']['type'], $form_state['values']['weight'], $form_state['values']['required'], $form_state['values']['register'], $form_state['values']['visibility'], $form_state['values']['autocomplete'], $form_state['values']['options'], $form_state['values']['page']);
+
+    drupal_set_message(t('The field has been created.'));
+    watchdog('profile', 'Profile field %field added under category %category.', array('%field' => $form_state['values']['title'], '%category' => $form_state['values']['category']), WATCHDOG_NOTICE, l(t('view'), 'admin/user/profile'));
+  }
+  else {
+    db_query("UPDATE {profile_fields} SET title = '%s', name = '%s', explanation = '%s', category = '%s', weight = %d, required = %d, register = %d, visibility = %d, autocomplete = %d, options = '%s', page = '%s' WHERE fid = %d", $form_state['values']['title'], $form_state['values']['name'], $form_state['values']['explanation'], $form_state['values']['category'], $form_state['values']['weight'], $form_state['values']['required'], $form_state['values']['register'], $form_state['values']['visibility'], $form_state['values']['autocomplete'], $form_state['values']['options'], $form_state['values']['page'], $form_state['values']['fid']);
+
+    drupal_set_message(t('The field has been updated.'));
+  }
+  cache_clear_all();
+  menu_rebuild();
+
+  $form_state['redirect'] = 'admin/user/profile';
+  return;
+}
+
+/**
+ * Menu callback; deletes a field from all user profiles.
+ */
+function profile_field_delete(&$form_state, $fid) {
+  $field = db_fetch_object(db_query("SELECT title FROM {profile_fields} WHERE fid = %d", $fid));
+  if (!$field) {
+    drupal_not_found();
+    return;
+  }
+  $form['fid'] = array('#type' => 'value', '#value' => $fid);
+  $form['title'] = array('#type' => 'value', '#value' => $field->title);
+
+  return confirm_form($form,
+    t('Are you sure you want to delete the field %field?', array('%field' => $field->title)), 'admin/user/profile',
+    t('This action cannot be undone. If users have entered values into this field in their profile, these entries will also be deleted. If you want to keep the user-entered data, instead of deleting the field you may wish to <a href="@edit-field">edit this field</a> and change it to a hidden profile field so that it may only be accessed by administrators.', array('@edit-field' => url('admin/user/profile/edit/'. $fid))),
+    t('Delete'), t('Cancel'));
+}
+
+/**
+ * Process a field delete form submission.
+ */
+function profile_field_delete_submit($form, &$form_state) {
+  db_query('DELETE FROM {profile_fields} WHERE fid = %d', $form_state['values']['fid']);
+  db_query('DELETE FROM {profile_values} WHERE fid = %d', $form_state['values']['fid']);
+
+  cache_clear_all();
+
+  drupal_set_message(t('The field %field has been deleted.', array('%field' => $form_state['values']['title'])));
+  watchdog('profile', 'Profile field %field deleted.', array('%field' => $form_state['values']['title']), WATCHDOG_NOTICE, l(t('view'), 'admin/user/profile'));
+
+  $form_state['redirect'] = 'admin/user/profile';
+  return;
+}
+
+/**
+ * Retrieve a pipe delimited string of autocomplete suggestions for profile categories
+ */
+function profile_admin_settings_autocomplete($string) {
+  $matches = array();
+  $result = db_query_range("SELECT category FROM {profile_fields} WHERE LOWER(category) LIKE LOWER('%s%%')", $string, 0, 10);
+  while ($data = db_fetch_object($result)) {
+    $matches[$data->category] = check_plain($data->category);
+  }
+  drupal_json($matches);
+}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                 %MI%)%!)óßßËàƒ·c#§_/3[äåùíÙåİİÉÅ±Á±µÉ||ha¡ T Ã„ÿËÃ×“dïÓÓï—eiYUI51=M=!5ëë×ü-¯ÃKƒ3;7£3g/WàäıõéÕÙİÙÅÙÅÙİÁÅq‘¹µ©©¡™‘‘•™!iqq}iUiUimQUä!1E9%!!))èøààèÔĞÜØéıÑıáåémµİÙİµÅ½µ¡µ¹½¡ô‘‘•…q…‰q´]}a„M’§UY…—EIM‹59ÿ{%)‰k1[	HOôøª?äèµ4ùı¬$éíOÙİ–ÉÍû¹½/ë©­"Û™5Ï‰ç¿y}c¯imşŸY]rsIM*c9=‰W)-!Gœ;	\+øü÷èñt,ıá4íÑïİÁêÿÍ±¡Ó½¡‰Ã­‘I³à£qß“}aŸƒmQ7s]AŠcM1JS=!áC-]3#ğ´üàñõôáå¬ÑÕ ûÁÅÑë±µAß¡¥\Ï‘•Z¿…T“quRƒaemwQUhgAEfW15yG!%ª;&+ğôàä” õù5óåé”ãÕÙ÷ÓÅÉsÃµ¹Ò³¥©2£•™ı“…‰¸‡uy£weizgUYV[EIõK59ô?%)ÿ/â	sòôøâäè»÷ùı7çéíV×Ùİ§ËÉÍµ¿¹½ë¯©­“Ÿ™
+‰ cy}ÆSimeCY]ÿ7IMÚ'9=I)-ÜSú	¡êøüÚèñåÓıáiÃíÑä³İÁ`£Í±ÿ“½¡-‡­‘wÆgqZW}a KmQß;]A±+M1T=!O-ş‘îğaŞüà=ÎñõÇáåì·ÑÕ„§ÁÅº—±µ}‹¡¥ {‘•æk…_qu¤Oae#?QU6/AEu15E!%üâ§Ò
+ÂğôU²àäËõù«»åé¯ÕÙÜƒÅÉßsµ¹Cc¥©êS•™fC…‰á3uy}'eikUYºEIBö59İæ%)tÚ¡Ê	IºôøÄ®äèc£ùı—éíØ‡Ùİ\wÉÍ÷g¹½ZW©­™K™ã;‰g+y}im|Y]ãşIM›î9=Ş)-vÎÕ¾	‡’øüÚ‚èñ~—ıá±‹íÑ{İÁpkÍ±[½¡<O­‘×?S/qî}a½mQ@â]A×ÒM1Â=!¶-$¦K–ğõ†üà‰vñõ;áåâÑÕ”WÁÅŠG±µ7¡¥ë+‘•ù…quxâaeĞÖQUbÆAEº15Ôª!%$š¯ŠvzğôÍjàä1õùÙSåé©CÕÙ3ÅÉˆ#µ¹X¥©ß•™6ò…‰ˆæuyîÖei¹ÆUYQ¶EITª59š%)Š™z	nôøˆ^äèàSùı CéíX3ÙİQ'ÉÍ»¹½{©­ö™Zæ‰Öy}±Æim%ºY]»ªIM{š9=Š)-Nzj	¥Zøüm2èñ2Gıáé;íÑ=+İÁüÍ±”½¡ëú­‘«êCÚq Î}aW¾mQ®]A¾M1~=!~-›RRBğ2üà¹"ñõ7áå6'ÑÕmÁÅÌ±µŒú¡¥$ê‘•/Ú…îÊqu†ºaeyªQU9AEĞ15ï~!%¯nG^ÙNğô>àäĞ7õù­'åéÈÕÙ`ÅÉ×öµ¹Kæ¥©ÆÖ•™BÆ…‰¡¶uyªeiÜšUYtŠEIóz59j%)ÎZfJ	á:ôøü.äèÁ#ùıyéíôÙİ×òÉÍYæ¹½ìÖ©­ÃÆ™Ò¶‰í¦y}èšimçŠY]âzIMñj9=^)-Nº>	Q.øü`èñ”ıá§íÑ¶öİÁÅêÍ±DÚ½¡0Î­‘Â¾½®qi‚}aÔrmQ›b]A6RM1¶F=! :-ò*Îğ	
+üàÄıñõ•òáåâÑÕƒÒÁÅíÂ±µ	¶¡¥$¦‘•C–…†quzvaeøjQU/ZAEÖJ15::!%¥*$†ğôháàäöõù¤æåéFÖÕÙIÊÅÉºµ¹ˆ®¥©4•™g…‰É~uy…neitBUY 2EI¯"59[%)‘Tõ	ƒåôøNÕäèåîùıxŞéí$ÎÙİï¾ÉÍ®¹½¶©­å™b‰DRy}wBim¦2Y]Õ"IM9=4)-gõ6å	¹ÕøüeÅèñÚıáüÎíÑ¿¾İÁk®Í±½¡±­‘äbRqOB}ab2mQ•"]AÈM1ÿ=!£õ-kåÕğJÅüà}µñõµÎáåè¾ÑÕ¬®ÁÅT±µ ¡¥7~‘•jn…^qu°2aet"QU<AEŸ15åñ!%üåïÕ.Åğôø¹àäCÎõùn¾åéÍ’ÕÙt‚ÅÉærµ¹’b¥©ZR•™]F…‰°6uyh&eioUYÂEIVõ59Yå%)ÌÙ@É	G¹ôøº©äèS¾ùıV®éíÉ‚Ùİ]rÉÍ@b¹½·R©­KB™:2‰­"y}!im$Y]›õIM3å9=şÕ)-ÅMµ	d©øüŸ™èñß®ıáªíÑ]rİÁìbÍ±£R½¡B­‘í2	&   	      H  –   
+
+     à  Ş       p  ¾       h  .         –       ˆ	  ¦         ¨  .  ((     h  Ö-  00     ¨%  >H  (                                    ıışÿéïõÿõøúÿşşşÿûüıÿñôùÿğóøÿşşşÿûüıÿiÀÿÉ×èÿ¶Öÿ¿Ğäÿƒ¢Ëÿ…¤Ìÿşşşÿÿÿÿÿ¬ĞÿºÌâÿ@q¯ÿ ÉÿwšÆÿ¦½Ùÿÿÿÿÿşşşÿ¨¾Úÿf¿ÿWƒ¹ÿf¿ÿR·ÿÃÓæÿşşşÿÿÿÿÿ»ÌâÿPÿ±Åİÿ«ĞÿW ÿæìôÿÿÿÿÿÿÿÿÿËØéÿ&^¥ÿğóøÿ­Âİÿ/e¨ÿõ÷úÿÿÿÿÿÿÿÿÿÁÑäÿ_ˆ¼ÿıışÿ…¥Ìÿ6j«ÿóöùÿÿÿÿÿÿÿÿÿÑİëÿÏÛëÿşşÿÿÙãïÿ°ÄŞÿìñ÷ÿÿÿÿÿ                                (   
+                                 ÿÿşÿÿÿÿÿÿÿÿÿıışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿÿÿşÿœ¶Öÿq•Äÿÿşÿÿ§¾ÚÿÍÚéÿÉ×èÿ[…ºÿÆÕçÿÿşşÿÿÿÿÿµÈßÿZ…ºÿøùüÿ:l¬ÿ‰§ÎÿÌÙéÿ"[£ÿéïõÿşÿÿÿÿÿşÿÕàíÿgÀÿÈÖçÿTŸÿ^ˆ¼ÿ¢ºØÿKy´ÿùúüÿÿÿÿÿÿÿÿÿãêóÿa‰½ÿf¿ÿ`‰¼ÿc‹¾ÿ^ˆ¼ÿdŒ¾ÿıışÿşşşÿşşşÿñôùÿR·ÿU ÿÃÒåÿ¶Öÿ	I™ÿ€¡ÊÿÿÿÿÿüüıÿÿÿÿÿıııÿP}¶ÿ/e©ÿúûüÿÒİìÿOœÿ­ĞÿşşşÿúûüÿışşÿÿÿÿÿbŠ¾ÿdŒ¾ÿÿÿÿÿª¿Ûÿ$]¤ÿ¢¹Øÿÿÿÿÿúûüÿşşşÿõ÷úÿYƒ¹ÿ°Äİÿşşşÿ¥¼Ùÿ+a¦ÿ–°ÒÿşşşÿüüıÿÿÿÿÿñõùÿÇÕçÿøúûÿÿÿÿÿìñöÿÒİìÿÔßíÿşşşÿÿÿÿÿ                                        (                                    ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿğó÷ÿÃÓåÿÇÕçÿìñöÿÿÿÿÿØãïÿîò÷ÿùúûÿÔßíÿÊØèÿÔßìÿøùûÿÿÿşÿÿÿÿÿåìôÿ>p¯ÿ:l­ÿÛäğÿøúüÿDu±ÿš´Õÿõøúÿs—ÄÿLšÿ†¤Ëÿõøúÿıışÿıışÿÿÿÿÿ¬ĞÿT€¸ÿşÿşÿÊ×èÿ$]¤ÿZ…ºÿÿÿÿÿ¬ĞÿW¡ÿÕàìÿÿÿÿÿûüüÿûüıÿşşşÿ ¹×ÿBs±ÿ÷ùûÿ†¤ËÿNœÿ5iªÿãëóÿq•Ãÿ4hªÿÜåïÿşşşÿûııÿüüüÿÿÿÿÿ²Åßÿ@q°ÿÑÜìÿQ~¶ÿ5jªÿ2g©ÿŸ¸×ÿk’Áÿ>p¯ÿåëóÿÿÿÿÿüüşÿüûüÿÿÿÿÿÁÑäÿGv²ÿ‚¡Ëÿ-d¨ÿ–±ÒÿdŒ¾ÿYƒºÿ]†»ÿT¸ÿõøúÿÿÿÿÿıııÿûüıÿÿÿÿÿÎÚêÿGv²ÿ7k¬ÿ(`¥ÿäëóÿ²ÄŞÿ#\¤ÿ#[¤ÿq•ÄÿÿÿÿÿıııÿışşÿüışÿÿÿÿÿßçñÿJy´ÿM›ÿdŒ¾ÿûüüÿäêóÿ&]¥ÿOœÿ‹©ÏÿÿÿÿÿûüüÿşşşÿıüıÿÿÿÿÿêïõÿZ…ºÿH™ÿ¯Äİÿÿÿÿÿùúüÿc‹¾ÿM›ÿ˜²Óÿşşşÿúûıÿıııÿıışÿÿÿÿÿöøúÿg¿ÿ![£ÿÛäğÿşşşÿ­ÂÜÿiÁÿSŸÿ«ÀÛÿşşşÿúûıÿşşşÿüışÿÿÿÿÿıüıÿY„ºÿV‚¹ÿ÷ùûÿÿÿÿÿ¬ÁÜÿDu²ÿPœÿ¬ÁÛÿÿÿÿÿùúüÿşşşÿıııÿÿÿÿÿÊØèÿQ}¶ÿ±ÄİÿÿÿÿÿıışÿĞÜêÿ‹¨ÎÿS€·ÿ¬Ğÿñôøÿışşÿıııÿşşşÿÿÿÿÿõøúÿîò÷ÿüııÿşşşÿşşşÿöùûÿøúüÿôöúÿñõùÿüüıÿÿÿÿÿşşşÿ                                                        (                                     ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿòõùÿñõùÿóöúÿşşşÿÿÿÿÿöùûÿûüıÿşşşÿøùüÿöøûÿöøûÿøùüÿşşşÿÿÿÿÿÿÿÿÿøúüÿb‹¾ÿ.d©ÿwšÇÿùúüÿÿÿÿÿV‚¹ÿ®ÃİÿışşÿœµÖÿ<o®ÿ?p¯ÿ¤¼ÙÿışşÿÿÿÿÿÿÿÿÿÿÿÿÿÁÑåÿ Z£ÿ¸ÊáÿÿÿÿÿÎÛëÿ#\¤ÿm“ÃÿÿÿÿÿÚäïÿ Z£ÿFv²ÿøúüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿêğöÿ*b§ÿ¦½Úÿÿÿÿÿˆ¦Íÿ Z£ÿ2gªÿöøûÿÄÓæÿ Z£ÿq–Äÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿğôùÿ5i«ÿ”°ÓÿúûıÿAr°ÿ!Z£ÿ!Z£ÿ½Îãÿ«ÁÜÿ Z£ÿ‚¢ËÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿGw³ÿx›ÇÿÇÕèÿ"\¤ÿ\†»ÿ/e©ÿ{ÈÿŸ¸×ÿ Z£ÿ—²ÔÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿX„ºÿc‹¾ÿu™Æÿ Z£ÿ±ÅŞÿo”Ãÿ=o¯ÿ‡¦Íÿ Z£ÿ·Êáÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿk‘ÂÿBs±ÿ5j¬ÿ0f©ÿóöúÿ¸Êáÿ#\¤ÿ<n®ÿ Z£ÿÏÛëÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ„¤Ìÿ Z£ÿ Z£ÿn”Ãÿşşşÿñôùÿ-c¨ÿ Z£ÿ-c¨ÿèîõÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·Öÿ Z£ÿ Z£ÿÁÑåÿÿÿÿÿıışÿ]‡¼ÿ Z£ÿ4i«ÿïóøÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ®Ãİÿ Z£ÿ7k¬ÿóöúÿÿÿÿÿìğ÷ÿš´Õÿ Z£ÿAr°ÿüııÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÆÔçÿ Z£ÿo•Ãÿşşşÿÿÿÿÿƒ£Ìÿ_‰½ÿ Z£ÿR·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ®Ãİÿ Z£ÿ·ÉáÿÿÿÿÿÿÿÿÿØâïÿhÁÿ Z£ÿFv²ÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿêğöÿyœÇÿq•ÄÿğôøÿÿÿÿÿÿÿÿÿÉ×èÿ©¿Ûÿ{Èÿr—Åÿ¼Íãÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ                                                                (      ,                              ÿÿÿÿÿÿÿÿşşşÿüışÿûüıÿûüıÿıışÿşşÿÿÿÿÿÿıışÿûüıÿıışÿşşşÿşÿÿÿıışÿûüıÿúûıÿûüıÿıışÿşşşÿÿÿÿÿÿÿşÿşşşÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿşşÿÿüııÿşşşÿéîõÿ»Ìâÿ´Çßÿ¹ËâÿÒİëÿùúûÿÿÿÿÿçîõÿÇÕçÿàèñÿüııÿö÷úÿÓŞìÿÂÑåÿ»ÍâÿÁĞåÿÕŞìÿôöùÿÿşşÿıışÿúûıÿÿÿÿÿÏÜëÿY„ºÿ&^¥ÿ>o¯ÿ•°Òÿôöúÿÿÿÿÿ¯ÃİÿJx³ÿ”¯Ñÿğõøÿïóøÿ”¯ÒÿEu²ÿ%]¤ÿLy´ÿ·Öÿêğöÿşşşÿüııÿüüıÿÿÿÿÿğôøÿ›µÕÿ Z¢ÿFv²ÿÈÖçÿûûüÿúüıÿ†¦ÍÿW ÿaŠ½ÿÖáîÿúûüÿÁÑäÿ:m­ÿD—ÿ]†»ÿÜæğÿúûüÿûüıÿıııÿıışÿıııÿÿÿÿÿÛäîÿ;o®ÿR·ÿŞæğÿşşşÿÜåğÿhÀÿSŸÿ6j¬ÿ¿ÎäÿÿÿÿÿÑÜëÿ?p¯ÿTŸÿŠ©ÎÿÿÿÿÿÿÿÿÿúûüÿşşşÿşşıÿûûüÿşşşÿäëóÿFv²ÿCs°ÿÉ×èÿÿÿÿÿ­ÁÜÿCs°ÿRÿSŸÿ¥»Ùÿùúüÿ³ÆŞÿ4h«ÿ,b§ÿœ¶ÖÿùúüÿşşşÿûüıÿÿÿÿÿşşşÿûûüÿÿÿÿÿèíõÿO|µÿ@q¯ÿ¿Ğåÿüüşÿ‚¡ÊÿX¡ÿV ÿPÿ€ Éÿ×áíÿ¤»Ùÿ2gªÿ3gªÿ¦¼Ùÿüüıÿşşşÿúüıÿÿÿÿÿıııÿúûıÿşşşÿğóøÿ^‡¼ÿ=o®ÿ¦½Úÿßæñÿ\†»ÿX¡ÿBr°ÿ"[£ÿ[†»ÿ­ÂÛÿ›´Õÿ0f©ÿ;n®ÿ±Åßÿüüıÿÿÿÿÿûûüÿşşşÿşşşÿùúıÿÿÿÿÿöùûÿl’Âÿ@r°ÿ‰§Îÿª¿Ûÿ<o®ÿ8k¬ÿ ÉÿLz´ÿAs°ÿ Éÿ—²Ôÿ/e¨ÿGw³ÿÄÓæÿıışÿşşşÿüüıÿÿÿÿÿÿÿÿÿúûıÿÿÿÿÿùûüÿw›ÆÿFv²ÿkÁÿm“Âÿ![£ÿXƒ¹ÿÃÓåÿŠ¨Íÿ;n®ÿO|¶ÿ|Èÿ'`¦ÿXƒºÿØãîÿşşşÿÿÿÿÿıışÿÿÿÿÿÿÿÿÿúûıÿÿÿÿÿùûüÿ‡¥ÌÿGv³ÿGv²ÿ;o®ÿSÿyœÆÿúûüÿÄÔæÿKy´ÿ$\¤ÿCs°ÿTŸÿjÁÿæìôÿşşşÿÿÿÿÿüışÿÿÿÿÿşşşÿúûıÿÿÿÿÿûûüÿ™³ÔÿDt±ÿ#\¤ÿ#\¤ÿ-e¨ÿ—²ÓÿÿÿÿÿñõùÿfŒ¿ÿNœÿ#[£ÿQÿ Êÿ÷øûÿÿÿÿÿşşşÿışıÿÿÿÿÿÿÿÿÿûüüÿÿÿÿÿüüıÿ«ÁÜÿJy³ÿMœÿV ÿ]‡»ÿÀĞãÿüışÿÿÿÿÿ‚¡ËÿV ÿX¡ÿU ÿŒªÏÿÿÿşÿşşşÿşııÿşışÿÿÿÿÿÿÿÿÿüııÿÿÿÿÿüışÿ»ÍâÿWƒ¹ÿL›ÿV ÿ«Ğÿêïõÿÿşşÿÿÿÿÿ£»Ùÿ=o®ÿX¢ÿW¡ÿ“¯ÒÿşşşÿÿÿÿÿıışÿıııÿÿÿÿÿÿÿÿÿûııÿÿÿÿÿüışÿÆÕæÿ\‡¼ÿLšÿ(_¥ÿ·ÉàÿışşÿşııÿşışÿÌÙéÿiÁÿW¡ÿX¡ÿŸ¸ÖÿşşÿÿÿÿÿÿüışÿıııÿÿÿÿÿşşşÿüışÿÿÿÿÿıııÿØâîÿf¿ÿPÿGw²ÿÌÙéÿÿÿÿÿôöúÿ´Çàÿ–±ÓÿcŒ¾ÿY¢ÿ.d§ÿ«ÁÛÿışşÿşşşÿûüşÿşşşÿÿÿÿÿÿÿÿÿüüıÿÿÿÿÿÿÿşÿåêóÿc‹¾ÿTŸÿvšÅÿßçğÿşşşÿñõùÿ—±ÔÿfÀÿAr°ÿU ÿ0f¨ÿ¯ÄİÿÿÿÿÿÿÿÿÿüüıÿşşşÿÿÿÿÿÿÿÿÿûüşÿÿÿÿÿışşÿÒİëÿO}¶ÿ*a§ÿ«ÀÛÿõ÷úÿşşşÿûüıÿŞçòÿ–±ÔÿEt²ÿW¡ÿ*a¥ÿ§¾Ùÿÿÿÿÿÿÿÿÿüüıÿşşşÿÿÿÿÿşşşÿıııÿÿÿÿÿèïõÿ­Ğÿ<n­ÿ^†¼ÿÛäïÿşşşÿÿÿÿÿúûüÿÔßìÿ¦½Ùÿs–ÄÿJx³ÿAr°ÿ„£ÌÿÖàíÿışşÿşşşÿüüıÿÿÿÿÿşşşÿşşşÿÿÿÿÿîó÷ÿ»Íâÿ¥¼ÙÿÇÔçÿøúûÿÿÿÿÿÿÿÿÿûüüÿàçñÿ×áíÿĞÜëÿ¾Îãÿ´Çàÿ¾Ïäÿßçñÿışşÿÿÿÿÿıışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿ                                                                                        (      0                              ÿÿÿÿÿÿÿÿşşşÿüışÿúûıÿúûıÿüüıÿışşÿÿÿÿÿÿÿÿÿıışÿûüıÿüışÿşşşÿÿÿÿÿışşÿûüıÿúûıÿúûıÿûüıÿışşÿşÿÿÿÿÿÿÿÿÿşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿşşşÿşşÿÿıııÿşşşÿ÷øûÿŞæğÿÓßìÿÖáîÿÚäïÿíğöÿşşşÿÿÿÿÿîó÷ÿàèñÿíòöÿûııÿûüüÿìïöÿàçòÿÛåïÿÛäïÿàæñÿëğöÿûûüÿÿÿşÿıışÿûüıÿşşşÿåìôÿ‚¢ËÿFv²ÿIx´ÿm“Ãÿ¾Ïäÿşşşÿÿÿÿÿ®ÂÜÿhÀÿ£»×ÿïô÷ÿ÷ùûÿµÇàÿq•ÃÿN|µÿN{´ÿw™Åÿ¹Ëàÿõ÷ùÿÿÿşÿüışÿûüıÿÿÿÿÿîó÷ÿ˜³Ôÿ-c¨ÿQÿm’ÂÿĞÛëÿÿÿÿÿøùüÿŸÉÿ#\£ÿk‘Áÿ×âîÿùûüÿÍÚéÿ\‡ºÿ
+J™ÿQÿu˜ÅÿÓßìÿùúüÿıışÿüııÿıışÿşşşÿÿÿÿÿèîõÿe¾ÿ(_¦ÿµÕÿöøûÿşşşÿİåñÿf¿ÿTŸÿFv³ÿ»Ìãÿÿÿÿÿùûûÿx›ÆÿPÿ3hªÿ²ÅŞÿÿÿÿÿÿÿÿÿúûüÿşşşÿıışÿüışÿÿÿÿÿşşıÿyœÆÿ&^¤ÿ‰¨Îÿğôøÿ÷ùûÿ¯ÂİÿM{´ÿQÿ Z¢ÿ ·×ÿÿÿÿÿèíôÿf¾ÿRŸÿN|µÿÃÒåÿÿÿÿÿÿÿÿÿúûüÿşşşÿşşşÿûüıÿşşşÿÿÿÿÿ‚£Êÿ)`¦ÿyÈÿíò÷ÿóõùÿ~Èÿ.c§ÿPÿN›ÿ„£ËÿêğöÿÏÚêÿY„¹ÿV¡ÿ_‰¼ÿÊØèÿıışÿşşşÿûûüÿÿÿÿÿıııÿûüüÿşşşÿşşşÿŠ¨Íÿ.d¨ÿo•ÃÿåëôÿäêóÿV¸ÿU ÿ!Z£ÿPÿf¾ÿÂÑäÿ½ÎâÿV‚¸ÿW¡ÿf¿ÿÎÛêÿşşşÿÿÿÿÿüüıÿşşşÿıııÿûüüÿşşşÿşşşÿ™³Ôÿ8l­ÿbŠ½ÿÅÓæÿ¿Ïäÿ8l¬ÿ)a¦ÿN{µÿ)`¦ÿKy³ÿ–°Óÿ¬ÁÛÿU¸ÿY¢ÿu˜ÆÿØâîÿşşşÿÿÿÿÿûüıÿşşşÿşşşÿúûıÿÿÿÿÿÿÿşÿ¤¼ÙÿCt°ÿ[…ºÿ¶ÖÿªÏÿ'_¥ÿIx²ÿ‰§ÍÿV‚¸ÿ=o®ÿhÀÿ·ÖÿV¸ÿ"[£ÿ‰§Íÿäêóÿÿÿÿÿÿÿÿÿüışÿÿÿÿÿÿÿÿÿúûıÿÿÿÿÿÿÿÿÿ«ÂÜÿM{´ÿU€¸ÿs—ÄÿX„ºÿV ÿl’ÁÿÆÕçÿ‘­ĞÿBs±ÿ>p¯ÿ{ÈÿGv²ÿ'^¥ÿ·Õÿğóøÿşşşÿÿÿÿÿıııÿÿÿÿÿÿÿÿÿúûıÿÿÿÿÿÿÿÿÿ¶ÉàÿW‚ºÿFv²ÿHw³ÿ1fªÿV ÿ«ÏÿùúüÿÈÖçÿWƒ¹ÿ!Z¢ÿDt±ÿ(_¥ÿ.e¨ÿ®ÃİÿùúüÿşşşÿÿÿÿÿüııÿÿÿÿÿşşşÿûüüÿÿÿÿÿÿÿÿÿÂÑåÿbŠ¾ÿ2g«ÿ$]¥ÿ#]¤ÿ4i«ÿ¦½Ùÿÿÿÿÿïóøÿt˜ÅÿQÿ"[£ÿRÿ;n®ÿÂÑåÿıışÿüüıÿşşşÿışşÿÿÿÿÿÿÿÿÿüııÿÿÿÿÿÿÿÿÿÎÛëÿp•Ãÿ(`¦ÿM›ÿ'`¥ÿd¿ÿÂÒåÿıışÿÿÿÿÿ‘­Ñÿ Y¢ÿX¡ÿQÿFv²ÿÏÜêÿşÿÿÿûûüÿÿÿÿÿşışÿÿÿÿÿÿÿÿÿûııÿÿÿÿÿÿÿÿÿÙãïÿ¢Êÿ.d¨ÿE—ÿ1f©ÿ›µÕÿçíôÿşşşÿÿÿÿÿ©ÀÛÿ<n®ÿ![¢ÿPÿL{´ÿÔàìÿÿÿÿÿûüüÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿüüşÿÿÿÿÿÿÿÿÿßèñÿ‹ªÎÿ1g©ÿD–ÿAr¯ÿÆÕæÿûûüÿÿÿşÿÿÿÿÿÏÛêÿo”Ãÿ+b¦ÿM›ÿT€·ÿİæïÿşşşÿúûıÿşşşÿıııÿÿÿÿÿşşşÿıııÿÿÿÿÿşşşÿèîõÿ˜²Óÿ1gªÿ
+JšÿZ…¹ÿİæğÿÿÿÿÿøùûÿàçòÿÀÏäÿ€¡Êÿ.d¨ÿNœÿa‰½ÿæíóÿşşşÿùúıÿıııÿşşşÿÿÿÿÿşşşÿıııÿÿÿÿÿşşşÿóöúÿ§½Úÿ2gªÿ [¢ÿ€¡Éÿêîõÿÿÿÿÿìñ÷ÿ—²Óÿt˜Åÿ_‰¼ÿ*a§ÿY¢ÿm“Âÿèïõÿşşşÿúûıÿıııÿşşşÿÿÿÿÿÿÿÿÿüışÿÿÿÿÿÿÿÿÿùúûÿ¥»Ùÿ&^¥ÿ8l¬ÿ­ÂÜÿóöùÿşşşÿóöùÿ³Çßÿ{œÈÿHx³ÿX¢ÿTÿhÀÿğóøÿÿÿÿÿùúüÿıııÿşşşÿÿÿÿÿşşşÿıüıÿÿÿÿÿıışÿŞæğÿ¢Êÿ$]¤ÿ`‰½ÿØâîÿüııÿÿÿÿÿüııÿçíôÿª¿Ûÿ[…»ÿ,b§ÿW ÿ\‡»ÿÙâîÿúûıÿúûıÿşşşÿıııÿÿÿÿÿşşşÿıııÿÿÿÿÿõøúÿ±ÅŞÿ]‡»ÿIx³ÿ¶ÖÿøúûÿÿÿşÿÿÿÿÿøúüÿÑİëÿ¯ÄÜÿ«Ïÿh¿ÿO}¶ÿf¿ÿª¿Ûÿåìôÿşşşÿşşşÿüüıÿÿÿÿÿşşşÿşşşÿÿÿÿÿùûüÿ×áîÿ¸Ëáÿ¿ÏäÿãêóÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿæíôÿßçñÿÜåğÿĞÛêÿÄÓçÿÅÔæÿÔßíÿğôøÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿışşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿ                                                                                                (       @                              şÿÿÿÿÿÿÿÿÿÿÿşşşÿüışÿúûıÿùúüÿùúüÿûûıÿüışÿşşşÿÿÿÿÿÿÿÿÿışşÿúûıÿúûıÿûüıÿışşÿşÿÿÿşÿÿÿıışÿûüıÿùûüÿøúüÿøúüÿùûüÿûüıÿışşÿşÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿşşÿÿÿÿÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿşşşÿşşşÿşşÿÿşşşÿÿÿÿÿÿÿşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿÿşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿşşıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşışÿşşşÿşşşÿşşÿÿüııÿşşşÿşşşÿñó÷ÿÕßìÿÄÓåÿÃÒåÿÆÕçÿÊØéÿÛãïÿñõøÿşşşÿÿÿÿÿõøûÿÜåïÿÓßëÿâéòÿõøúÿşşıÿùúûÿçìôÿ×àîÿĞÛëÿËÙèÿÊØèÿÏÚêÿØáîÿçíôÿ÷ùûÿşşşÿÿÿşÿıışÿúûıÿşşşÿşşşÿİåğÿ“°Òÿ_ˆ¼ÿS¸ÿZ„ºÿq•Äÿ£ºÙÿßçñÿşşşÿşşşÿŞæñÿ‘­ĞÿwšÅÿ¢º×ÿİæğÿüüüÿó÷ùÿÂÑåÿªÏÿn”Âÿ[†ºÿ[…ºÿp”Âÿ”¯ÒÿÄÔåÿïôøÿÿÿşÿÿÿşÿûüıÿùûıÿÿÿÿÿÿÿÿÿİæğÿ«Ïÿ@q¯ÿSŸÿX¢ÿS·ÿ·×ÿŞçñÿÿÿÿÿşşşÿÇÕçÿZ„ºÿ5iªÿo”ÂÿÃÓåÿõøúÿô÷úÿÆÔçÿyœÇÿ9m¬ÿPÿRÿFu±ÿŠ¨ÍÿÇÖçÿñõùÿşşşÿşşşÿûüüÿûüıÿÿÿÿÿÿÿÿÿòöùÿÆÕçÿq•Ãÿ!Z£ÿ"[¤ÿs˜ÄÿÊÖèÿñôøÿÿÿÿÿöøûÿ«ÁÜÿCs±ÿV¡ÿO|µÿ¦½Úÿéîõÿúûıÿíñ÷ÿ™´Ôÿ=o®ÿF—ÿQÿ_ˆ¼ÿ»Íâÿîò÷ÿúüıÿûûıÿşşşÿıııÿüışÿşşşÿşşşÿÿÿÿÿõ÷úÿ¤»Øÿ:m­ÿ0f©ÿ‹©Îÿäêóÿşşıÿüışÿãêóÿ‘®Ñÿ=o®ÿRÿ5j«ÿŠ¨Îÿßèòÿÿÿÿÿÿÿÿÿ­ÃÜÿGv²ÿMœÿ+b¦ÿ„£Ëÿäëóÿÿÿÿÿÿÿÿÿùúüÿıııÿşşşÿıışÿşşşÿûüıÿÿÿÿÿÿÿÿÿ´ÈßÿCt°ÿ+b§ÿ{ÈÿØâîÿıııÿô÷úÿÁĞäÿr—Äÿ6j«ÿNœÿV ÿm’ÂÿÔàíÿÿÿÿÿ÷ùûÿœµÕÿ<o®ÿPÿ>p¯ÿ•°Òÿèîõÿÿÿÿÿÿÿÿÿùûüÿıııÿşşşÿşşıÿıııÿúûüÿşşşÿÿÿÿÿ»ÍâÿJy³ÿ*b¦ÿm’ÂÿÌÚêÿÿÿşÿíò÷ÿŸ·ÕÿQ~¶ÿ,b§ÿM›ÿKšÿX‚¸ÿÄÔåÿøúûÿãéòÿŠ¨Îÿ6k¬ÿV¡ÿN|µÿ¡¸×ÿçíôÿıışÿşşşÿúüıÿşşşÿÿÿÿÿşşşÿıııÿúûüÿşşÿÿÿÿÿÿÀĞäÿP}¶ÿ,c§ÿgÀÿÇÖçÿÿÿÿÿâêòÿ}Èÿ0e¨ÿ Y¢ÿOÿJ™ÿHw²ÿ¨¾ÙÿßèğÿĞÜëÿƒ£Ëÿ4i«ÿX¡ÿU¸ÿ¨¾ÚÿêïõÿşşşÿşşşÿúüıÿşşşÿÿÿÿÿıııÿşşşÿúûıÿşşşÿşşşÿÄÒæÿXƒ¹ÿ/e¨ÿ_‰½ÿ¼ÍãÿöøûÿÓŞìÿc‹¾ÿW¡ÿ#[£ÿ"Z£ÿPœÿ<n­ÿ‹©ÎÿÄÓåÿÁÑäÿ€¡Êÿ3hªÿY¢ÿZ…ºÿ¬ÂÜÿëğöÿşşşÿÿÿÿÿûûüÿşşşÿşşşÿıııÿşşşÿúûıÿşşşÿşşşÿÎÚêÿdŒ¾ÿ4i«ÿW‚¹ÿ§½ÚÿÜäğÿ·ÉàÿJy´ÿV ÿ<n­ÿDs°ÿ'_¤ÿ4hªÿm’Âÿ£ºØÿ²ÆŞÿ~ŸÉÿ2hªÿ"\£ÿeŒ¾ÿ¶ÉàÿïòøÿşşşÿÿÿÿÿûûüÿşşşÿşşşÿşşşÿışşÿùúıÿÿÿÿÿÿÿÿÿÔßíÿm“Âÿ;n®ÿT€·ÿ“®Ñÿ»Ìâÿ•°Òÿ8l­ÿ"\¤ÿ\†ºÿo“ÁÿGw²ÿ8k¬ÿS·ÿƒ¢Ëÿ§½Ùÿ Êÿ3gªÿ%^¤ÿq•ÃÿÂÒåÿòõùÿÿÿÿÿÿÿÿÿüüıÿşşşÿÿÿÿÿşşşÿışşÿùúıÿÿÿÿÿÿÿÿÿÙâïÿvšÆÿCt°ÿR~·ÿ}Èÿ“®Ñÿm“Âÿ'`¦ÿ0fªÿ€¡Éÿ ¸Öÿu˜ÅÿIw³ÿ=o®ÿ_ˆ½ÿ’­ĞÿyœÇÿ0e©ÿ+a¦ÿ¡ÊÿÑİëÿ÷ùûÿÿÿÿÿÿÿÿÿûüıÿşşşÿÿÿÿÿÿÿÿÿışşÿùúıÿÿÿÿÿÿÿÿÿÜåğÿ}ŸÉÿJx³ÿP|¶ÿg¿ÿm“ÂÿIy´ÿV ÿ?q¯ÿ¢ºØÿÎÛéÿ¤»Øÿ_ˆ¼ÿ3hªÿ@q°ÿq•ÃÿcŒ¾ÿ'_¥ÿ0f©ÿ«Ğÿİåğÿúüüÿşşşÿşşşÿüışÿşşşÿÿÿÿÿÿÿÿÿışşÿùúıÿÿÿÿÿÿÿÿÿàçòÿ‡¦ÍÿP}¶ÿGv³ÿMz´ÿIy´ÿ.e¨ÿSÿQ¶ÿÁÑåÿõ÷úÿĞÛêÿ{Èÿ4i«ÿ%]¤ÿGu²ÿ@q¯ÿV ÿ9l¬ÿœµÖÿæìôÿşşşÿşşşÿşşşÿüüşÿşşşÿÿÿÿÿşşşÿşşşÿúûıÿÿÿÿÿÿÿÿÿäêóÿ’®ÒÿU¹ÿ;n®ÿ4hªÿ0fªÿ#]¤ÿ![£ÿe¾ÿÑÜëÿÿÿÿÿìğöÿ˜²Ôÿ>o®ÿQÿ(_¥ÿ'_¥ÿQÿCs±ÿª¿Ûÿğóøÿÿÿÿÿıııÿÿÿÿÿıııÿşşşÿÿÿÿÿşşşÿşşşÿúûıÿÿÿÿÿÿÿÿÿèîõÿ¡¹×ÿ]‡¼ÿ1f©ÿW¡ÿW¡ÿ%]¥ÿ=p®ÿ‚¢ËÿÛäïÿÿÿÿÿüüıÿ¶ÈáÿMz´ÿOÿV ÿW¡ÿQÿO|¶ÿºËâÿûüüÿÿÿÿÿûüıÿÿÿÿÿıııÿşşşÿÿÿÿÿÿÿÿÿışşÿûüüÿÿÿÿÿÿÿÿÿìñöÿ®ÂÜÿgÀÿ/e©ÿNœÿOÿ.d¨ÿaŠ½ÿ¥¼ÙÿãêòÿüışÿÿÿÿÿÊ×éÿ^‡»ÿV¡ÿV ÿV ÿTŸÿV‚¹ÿÁÑåÿÿÿşÿşşşÿúûüÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿışşÿûûüÿÿÿÿÿÿÿÿÿïôøÿ¹Ëáÿt˜Åÿ5i«ÿJšÿJšÿ:n­ÿˆ¦ÍÿÍÚéÿñõøÿşşşÿşÿÿÿÖàíÿt˜Åÿ/e©ÿ Z¢ÿSŸÿUŸÿ[†»ÿÅÓæÿÿÿÿÿşşşÿúüıÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿüüıÿÿÿÿÿÿÿÿÿñõùÿÁÑäÿ|Èÿ;m­ÿK›ÿ
+J™ÿGw²ÿ¨¾Úÿêïõÿúûüÿÿÿÿÿÿÿÿÿåëóÿ—²ÔÿQ~·ÿ,b§ÿQÿV ÿaŠ½ÿÉ×çÿşşşÿÿÿÿÿùûüÿıııÿıııÿıııÿÿÿÿÿÿÿÿÿşşşÿûüıÿÿÿÿÿÿÿÿÿôöúÿÈÖçÿ‚¢Ëÿ;m­ÿKšÿN›ÿZ…ºÿÃÒåÿûüıÿşşşÿşşşÿÿÿÿÿîñöÿ¸Éáÿq–Äÿ5i«ÿOœÿV ÿjÀÿÒŞëÿşşÿÿÿÿÿÿùúüÿıııÿıııÿıııÿÿÿÿÿşşşÿşşşÿüışÿÿÿÿÿşşşÿ÷ùûÿÔŞìÿŒªÏÿ=o®ÿM›ÿY¡ÿn“ÂÿÒİëÿÿÿÿÿÿÿÿÿòõúÿÛäğÿÃÒåÿ¨¾Úÿs—Äÿ6k¬ÿPœÿ%]¤ÿt—ÄÿÙãîÿşşşÿşşşÿøúûÿüşşÿşşşÿşşşÿÿÿÿÿşşşÿşşşÿüışÿÿÿÿÿşşşÿûûıÿáèòÿ—²Óÿ>p¯ÿRÿ8l¬ÿŠ©Íÿİåğÿÿÿÿÿÿÿÿÿäêóÿ¦¼Úÿ€¡ÊÿxšÇÿ]‡»ÿ2gªÿU ÿ1f¨ÿ|ÇÿÜåğÿıışÿşşşÿùúüÿışşÿşşşÿşşşÿÿÿÿÿÿÿÿÿıııÿüüıÿÿÿÿÿÿÿÿÿşşşÿçìôÿ—²Óÿ5i«ÿTŸÿS€·ÿ¨¿Úÿæìôÿışşÿşşşÿåëôÿ¥¼Úÿw›ÇÿaŠ½ÿDu²ÿ%]¥ÿRÿ.d§ÿ{ÇÿàçòÿÿÿÿÿÿÿÿÿøúûÿüııÿşşşÿşşşÿÿÿÿÿÿÿÿÿıııÿüüşÿÿÿÿÿÿÿÿÿışşÿàçñÿŒªÎÿ-d¨ÿ$]¤ÿu™ÅÿÊ×éÿóöùÿşşşÿşşşÿôöúÿ×àíÿ«ÀÜÿwšÇÿEu²ÿ#\¤ÿPÿ'_¥ÿvšÆÿàèòÿÿÿÿÿÿÿÿÿøúûÿüııÿşşşÿşşşÿÿÿÿÿşşşÿşşşÿûııÿÿÿÿÿıışÿëğõÿ»Ìáÿk‘Àÿ)`¥ÿ<n®ÿ™³ÔÿåëôÿûüıÿÿÿÿÿÿÿÿÿûüıÿìğöÿÇÔçÿ«ĞÿWƒºÿ4h«ÿZ¢ÿ)`¦ÿhÀÿÅÔæÿòõùÿüüıÿúûüÿışşÿıııÿıııÿÿÿÿÿşşşÿşşşÿüııÿÿÿÿÿùûüÿÒŞëÿ‘­ĞÿR¶ÿ<n­ÿjÀÿÁĞäÿúûüÿşşşÿÿÿÿÿÿÿÿÿõøúÿÙâîÿ¼Ìâÿ·Öÿ Éÿa‰¼ÿIy³ÿGw³ÿgÀÿ¢ºØÿÔßíÿõ÷úÿışşÿşşşÿüüıÿıııÿÿÿÿÿşşşÿÿÿÿÿışşÿÿÿÿÿùûüÿÙãîÿ©ÀÛÿ‰§ÍÿªÏÿ²ÅŞÿäëóÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿõøúÿÜäïÿÌÙéÿÇÕçÿ¾Ïãÿ­ÂÜÿ·Öÿ—³ÔÿŸ¸×ÿ·ÉàÿØâïÿöøúÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿşşşÿÿÿÿÿşşşÿÿÿÿÿışşÿô÷úÿçíõÿàèòÿãêóÿîò÷ÿúûüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüııÿõ÷úÿòõùÿòõùÿğôøÿìñ÷ÿèîõÿæíôÿæíõÿëğöÿóöúÿüııÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿ                                                                                                                                (   (   P                              şÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿüııÿúûıÿùúüÿøúüÿùúüÿúûıÿüüıÿışşÿşşÿÿÿÿÿÿÿÿÿÿşşşÿüüıÿùûüÿùúüÿúûıÿüışÿşşşÿÿÿÿÿşÿÿÿışşÿûüıÿúûüÿøúüÿøùüÿøùüÿøúüÿúûıÿüııÿışşÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿşşşÿşşÿÿÿşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿÿşÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿşşşÿşşşÿşşÿÿşşşÿÿÿÿÿÿÿÿÿşşşÿıııÿüüıÿüüüÿüüıÿûüüÿûüıÿûûıÿûûıÿüüüÿşııÿÿÿşÿşşşÿşşşÿışıÿışşÿşşıÿışıÿıışÿışşÿşışÿıüıÿıııÿşışÿşışÿÿşÿÿÿÿşÿÿÿşÿÿşÿÿÿışÿşııÿıııÿıııÿışşÿşşşÿşşşÿşşÿÿüüıÿÿÿÿÿşşşÿşşşÿëğõÿÑİëÿ½Îâÿ·Éàÿ¹Ëáÿ»ÌãÿÀĞåÿÍÚêÿâéòÿ÷øúÿşşşÿÿÿÿÿüııÿãêòÿÎÜêÿÌÙèÿÚãîÿíò÷ÿúüüÿşşşÿ÷øúÿåëóÿÔŞìÿÊÖèÿÅÓæÿÀĞäÿ¿ÏãÿÃÑåÿÊÖèÿÕßíÿåìôÿõ÷úÿşşşÿÿÿşÿÿÿşÿüışÿùûüÿÿÿÿÿşşşÿşşşÿ×áíÿŸ¸Öÿr—Äÿ]‡¼ÿ^ˆ¼ÿdŒ¿ÿu˜Æÿ—²ÔÿÄÓæÿğó÷ÿşşşÿşşşÿöøúÿºÌâÿ‰¨Îÿ‚¡Êÿ¢º×ÿÑİëÿòöùÿışşÿñôøÿÊ×éÿ¡¸×ÿƒ£Ëÿq•ÃÿdŒ¾ÿd‹½ÿq•Ãÿ‡¥Ìÿ¦½ÙÿËÙéÿíñöÿşşşÿÿÿşÿÿÿşÿûüıÿøúûÿÿÿÿÿÿÿÿÿÿÿÿÿÒŞìÿ­ĞÿQ~¶ÿ*a¦ÿ Z£ÿ,b§ÿM{µÿƒ£Ëÿ¼Íãÿîò÷ÿÿÿÿÿÿÿÿÿìğöÿ˜²ÓÿR·ÿFu±ÿs—Äÿ¶ÉàÿçîôÿüııÿğôøÿÆÔçÿªÏÿZ…ºÿ7j«ÿ Y¢ÿ"Z¢ÿ<n­ÿf¾ÿ˜³ÔÿÆÖçÿìñöÿşşşÿşşşÿşşşÿûüüÿùûüÿÿÿÿÿÿÿÿÿÿÿÿÿáéòÿ­ÂÜÿk‘Áÿ-c¨ÿNœÿ Y¢ÿW‚¹ÿ›µÕÿĞÛëÿóöùÿÿÿÿÿşşşÿÙãïÿŸÉÿ4iªÿ%]¤ÿT€¸ÿœ¶Öÿ×âîÿøúüÿõ÷úÿÜåñÿ¡¹×ÿ\‡ºÿ$\£ÿD–ÿI™ÿ6jªÿu˜Åÿ¶ÉàÿÜåğÿóöùÿışşÿıışÿşşşÿüüıÿûüüÿÿÿÿÿÿÿÿÿÿÿÿÿöùûÿİåğÿ¡ºØÿQ~¶ÿX¢ÿ.d¨ÿu˜ÅÿÁÑäÿëğöÿûûıÿÿÿÿÿõùûÿÁÑåÿn”Ãÿ,c§ÿU ÿ@q¯ÿƒ¤ÌÿÅÔçÿõ÷ûÿüışÿùúüÿÁÑäÿq–Ãÿ*a¦ÿG—ÿRÿO}µÿ¶ÖÿãêòÿùûüÿıışÿüııÿûüıÿşşşÿıııÿıııÿşşşÿşşşÿşşşÿÿÿÿÿúûıÿÇÖçÿl’Áÿ+b§ÿ6j«ÿ€¡ÊÿÏÛêÿøùûÿÿşÿÿûüıÿæíôÿ©¿ÛÿbŠ½ÿ*b¦ÿQÿ-c§ÿk’Âÿ¶ÇáÿôöúÿÿÿÿÿÿÿÿÿÌÙéÿwšÆÿ/d¨ÿM›ÿ'_¥ÿhÀÿ¹ÊáÿúüüÿÿÿÿÿÿÿÿÿûüıÿúûüÿıııÿşşşÿıııÿşşşÿüışÿüışÿÿÿÿÿÿÿÿÿÔàìÿwšÆÿ.e¨ÿ0f©ÿs—ÅÿÃÒåÿóõùÿşşşÿóõùÿËÙéÿªÏÿS·ÿ(`¥ÿM›ÿTŸÿQ~·ÿ¥»Úÿïòøÿÿÿÿÿÿşıÿ½ÎãÿkÀÿ)a¦ÿPÿ5i«ÿx›ÇÿÂÑåÿúüüÿÿÿÿÿÿÿÿÿûüıÿúûüÿıııÿşşşÿşşşÿÿÿÿÿûüıÿûüıÿşşşÿşşşÿØãîÿ}ŸÈÿ3iªÿ-c§ÿfÀÿµÈàÿîò÷ÿÿÿÿÿëïöÿ±ÅŞÿp”ÃÿBr°ÿ&^¤ÿKšÿKšÿ?q¯ÿ–°Óÿäêóÿüışÿğó÷ÿ¬ÁÜÿ_ˆ¼ÿ'_¥ÿV ÿCs±ÿ„£ÌÿÅÔæÿõøúÿşşşÿşşşÿüışÿûüıÿşşşÿÿÿÿÿşşşÿÿÿÿÿûüıÿûüşÿşşşÿÿÿÿÿÜåğÿ‚£Êÿ8l«ÿ.c¨ÿ`‰½ÿ®Ãİÿíò÷ÿÿÿÿÿâéòÿ—±ÓÿQ}¶ÿ.c§ÿ Y¢ÿK›ÿH˜ÿ3gªÿ„£ËÿĞÛêÿîò÷ÿàçñÿ¡¹ØÿY„¹ÿ&_¥ÿY¢ÿKy´ÿŒªÏÿÊØèÿõøûÿıışÿşşşÿûışÿûûüÿşşşÿÿÿÿÿşşşÿÿÿÿÿûııÿûışÿÿÿÿÿÿÿÿÿŞæñÿ†¦Ìÿ<o­ÿ/d¨ÿ]†»ÿ¨¿ÛÿêğöÿÿÿşÿÖàîÿ€ Éÿ7j«ÿX¡ÿY¢ÿPÿJšÿ-b§ÿr–Ãÿ¶ÈßÿÙâîÿĞÜëÿ›µÕÿWƒ¹ÿ&^¥ÿ Z¢ÿO|µÿ‘­ĞÿÍÚéÿ÷úûÿşşşÿşşşÿûışÿûûüÿşşşÿÿÿÿÿıııÿşşşÿûüüÿüüıÿşşşÿşşşÿáèóÿªÏÿCs°ÿ1f©ÿW‚¹ÿ·×ÿàèòÿõ÷úÿÇÕèÿk’Âÿ'^¥ÿV ÿ)`¦ÿ"Z£ÿQÿ)_¥ÿ`‰¼ÿ¶ÕÿÃÓåÿÃÒåÿ˜²ÓÿV‚¸ÿ%]¥ÿ"\£ÿS·ÿ•°ÒÿĞÜëÿøúüÿşşşÿÿÿÿÿüüıÿüüıÿşşşÿşşşÿıııÿşşşÿûüüÿüüıÿşşşÿşşşÿèíõÿ–±ÓÿLz´ÿ4iªÿQ~¶ÿ­ÑÿÍÙêÿàçòÿ±ÄßÿVƒºÿX¡ÿ$]¤ÿAq°ÿ=n®ÿ&^¥ÿ*`¦ÿP|µÿ‚¢ÊÿªÀÛÿµÈßÿ”¯ÒÿU¸ÿ%]¥ÿ%^¥ÿ[†»ÿ·ÖÿÖàíÿùúüÿşşşÿÿÿÿÿüüıÿûüıÿşşşÿşşşÿşşşÿıııÿúûıÿüûüÿÿÿÿÿÿÿÿÿìñ÷ÿ·ÖÿS€·ÿ9l¬ÿN|µÿ„£Ëÿ·ÈàÿÅÓçÿ—±ÔÿFw³ÿX¡ÿ5jªÿ^‡»ÿ^‡»ÿ?q¯ÿ2gªÿDt±ÿiÀÿ’®ÑÿªÀÚÿ”¯ÒÿV‚¹ÿ$\¤ÿ(`¦ÿdŒ¾ÿ¨¾ÛÿÜåğÿúûıÿÿÿÿÿşşşÿıışÿüışÿşşşÿÿÿÿÿşşşÿıııÿúûıÿüûüÿÿÿÿÿÿÿÿÿğôøÿ¤¼ÙÿZ…ºÿ?q®ÿN|µÿx›Æÿ¶Öÿ¤»Ùÿy›Çÿ6k¬ÿZ¢ÿIx²ÿ~ŸÉÿ„¤ËÿbŠ½ÿDt±ÿ=o®ÿP}¶ÿwšÆÿ›µÕÿ‘­ĞÿV¸ÿ$\¤ÿ-c¨ÿo•ÃÿµÉàÿäêóÿûûıÿÿÿÿÿşşşÿıışÿüışÿşşşÿÿÿÿÿşşşÿıııÿúûıÿüûüÿÿÿÿÿÿÿÿÿñõùÿ©ÀÛÿaŠ½ÿDu±ÿO|µÿk’Áÿ„£Ëÿ‚¢ËÿZ…ºÿ(`¦ÿ$^¤ÿ^ˆ»ÿŸ·Öÿ¬ÂÜÿ‰§Íÿ\†»ÿ>p¯ÿ<n®ÿ\…»ÿ†¥Ìÿ…¤ËÿO}¶ÿ"[£ÿ2hªÿ{ÇÿÃÓåÿìğöÿüüıÿÿÿÿÿşşşÿüışÿüüşÿşşşÿÿÿÿÿÿÿÿÿşşşÿúûıÿüüüÿÿÿÿÿÿÿÿÿòöúÿ­ÃİÿgÀÿIx³ÿMz´ÿ^ˆ»ÿj‘ÁÿcŒ¾ÿ@r°ÿW ÿ*b¦ÿs—Äÿ½ÎãÿÒİëÿ°ÄÜÿv™ÅÿEu²ÿ0e©ÿBr±ÿiÀÿn’ÂÿAr°ÿX¡ÿ8l¬ÿ…¥ÌÿÍÙéÿòõùÿıışÿşşşÿÿÿÿÿışşÿıııÿşşşÿÿÿÿÿÿÿÿÿşşşÿúûıÿüüüÿÿÿÿÿÿÿÿÿôöúÿ´Çàÿp•ÄÿM{µÿHv²ÿM{µÿP}¶ÿGw³ÿ+c¨ÿSÿ4i«ÿˆ¦ÍÿØâîÿòõùÿÔßëÿ’­ĞÿR·ÿ*a¦ÿ*a§ÿGv²ÿN{µÿ.d§ÿU ÿ?q°ÿ­ĞÿÕßíÿøùûÿşşşÿşşşÿÿÿÿÿışşÿüııÿşşşÿÿÿÿÿşşşÿşşşÿûüüÿûııÿÿÿÿÿÿÿÿÿõ÷ûÿºÌâÿy›ÇÿP}·ÿ@q°ÿ<n®ÿ9m­ÿ3i«ÿ"[¤ÿVŸÿBs°ÿ—²Óÿçíõÿÿÿÿÿëğöÿ¬ÀÛÿb‹½ÿ*a¦ÿU ÿ-b§ÿ4hªÿX¡ÿU ÿHw³ÿ›µÕÿŞåğÿûûıÿÿÿÿÿıııÿşşşÿşışÿışşÿşşşÿÿÿÿÿşşşÿşşşÿûüüÿûııÿÿÿÿÿÿÿÿÿöøûÿÂÑåÿ„£ËÿT€¸ÿ8k­ÿ*a§ÿ$]¥ÿ%^¥ÿ"[¤ÿ)a¦ÿXƒ¹ÿ¦½ÙÿïóøÿÿÿÿÿùûüÿÇÔçÿt˜Åÿ.c§ÿNœÿW¡ÿ%]¤ÿRÿW¡ÿS·ÿ¨¾Úÿèíôÿıışÿÿÿÿÿüüıÿşşşÿşışÿışşÿşşşÿÿÿÿÿşşşÿşşşÿûüüÿûııÿÿÿÿÿÿÿÿÿ÷ùûÿÊ×éÿ¬ĞÿZ„ºÿ3h«ÿW¡ÿRÿW¡ÿ*a¦ÿBt±ÿt˜Äÿ¶ÉàÿñõùÿÿÿÿÿşşşÿÜäğÿ†¥Íÿ7j«ÿOÿTŸÿY¢ÿQÿ!Z¢ÿ\…»ÿ³ÆŞÿñôøÿşşşÿÿÿÿÿûüıÿşşşÿşışÿışşÿşşşÿÿÿÿÿÿÿÿÿşşşÿüııÿüüşÿÿÿÿÿÿÿÿÿøúüÿĞÜìÿ™´ÔÿbŠ½ÿ4i«ÿSŸÿJšÿTŸÿ4h«ÿ^ˆ¼ÿ“¯ÒÿÊ×èÿóöùÿüışÿşÿÿÿèíõÿ–±ÓÿEt±ÿV ÿV ÿX¡ÿPÿ#\£ÿa‰½ÿ¸Êàÿöøúÿÿÿÿÿşşşÿúûüÿıııÿışşÿşışÿşşşÿÿÿÿÿÿÿÿÿşşşÿûııÿüışÿÿÿÿÿÿÿÿÿùúüÿ×âîÿ¤¼Øÿl’Áÿ9m­ÿRÿF—ÿQÿ@q°ÿ|Éÿ¶Éàÿàèñÿøùûÿışşÿşşşÿíñ÷ÿ¤¼ÙÿW‚¹ÿ)a¦ÿ Y¢ÿW ÿPÿ%^¤ÿeŒ¾ÿ»ÌâÿøúûÿÿÿÿÿşşşÿúûıÿşşıÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿüüşÿıüıÿÿÿÿÿÿÿÿÿúûıÿÛåğÿ«ÂÛÿs˜Äÿ?q¯ÿSŸÿD–ÿRÿKzµÿ–±ÓÿÓŞìÿñôøÿûüıÿÿÿÿÿÿÿÿÿòõùÿ·Êáÿs—ÅÿAs°ÿ*a§ÿV¡ÿOœÿ'_¥ÿiÀÿ½Îãÿùûüÿşşşÿÿÿÿÿùúüÿıışÿıııÿıııÿıııÿÿÿÿÿÿÿÿÿşşşÿüüşÿüüıÿÿÿÿÿÿÿÿÿúûüÿßèñÿ±ÆŞÿx›ÆÿAr°ÿSŸÿD–ÿUŸÿZ…ºÿ­ÂÜÿìñ÷ÿûûüÿışşÿÿÿÿÿÿÿÿÿúúıÿÏÛêÿ•°Óÿ]‡¼ÿ5i«ÿU ÿM›ÿ*a¦ÿo”ÂÿÄÓåÿüııÿşşşÿÿÿÿÿùúüÿıışÿıııÿıııÿıııÿÿÿÿÿÿÿÿÿşşşÿüüşÿüüıÿÿÿÿÿÿÿÿÿûüüÿäëóÿ¸Ëáÿ}ÉÿAr°ÿRÿF˜ÿ$]£ÿj‘Àÿ¿ÏãÿûüıÿşşşÿşşşÿüüıÿûûüÿïòøÿÓİìÿ¦½Úÿn”Ãÿ;n­ÿT ÿL›ÿ/d¨ÿwšÆÿËØèÿşşşÿşşşÿÿÿÿÿùúüÿıışÿıııÿıııÿıııÿÿÿÿÿşşşÿşşşÿıııÿıışÿÿÿÿÿşşşÿüııÿëğöÿÃÒåÿ…¤ÌÿDt±ÿTŸÿL›ÿ4iªÿzÆÿÊ×èÿÿÿÿÿÿÿÿÿÿÿÿÿîò÷ÿÙâîÿÂÑåÿ±ÅŞÿ˜³Ôÿl’Âÿ;n­ÿU ÿPÿ8k¬ÿ ÉÿĞÜêÿşşşÿşşşÿşşşÿøùûÿüüşÿşşşÿşşşÿşşşÿÿÿÿÿşşşÿşşşÿıııÿıışÿÿÿÿÿşşşÿüııÿòõùÿÏÚêÿªÏÿFu²ÿV ÿW ÿKz´ÿ­ÏÿÔßìÿÿÿÿÿÿÿÿÿÿÿÿÿßçñÿ°ÃİÿŒ©Ïÿ¡Êÿx›Æÿ\†»ÿ6k¬ÿX¡ÿW¡ÿAs°ÿ…¥ÌÿÓŞìÿıışÿşşşÿşşşÿùùüÿüüşÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿıııÿüışÿıışÿÿÿÿÿÿÿÿÿşşşÿ÷øûÿÔŞìÿªÏÿ@q°ÿUŸÿ(a¦ÿdŒ¾ÿ¦¾ÙÿİåïÿşşşÿşşşÿşşşÿÛäğÿ¥¼Ùÿ{ÈÿhÁÿ^‡¼ÿGw³ÿ+b§ÿU ÿX¡ÿAs°ÿ†¥ÌÿÕàíÿÿÿÿÿÿÿÿÿÿÿÿÿøùûÿüüıÿÿşşÿÿÿşÿşşşÿÿÿÿÿÿÿÿÿıııÿüışÿıışÿÿÿÿÿÿÿÿÿÿÿÿÿùúûÿÔŞìÿ‰§Íÿ8k¬ÿTŸÿ8l¬ÿ€ ÊÿÀĞäÿéîõÿşşşÿşşşÿşşşÿçíõÿÁÑåÿ›µÕÿ{œÈÿ]‡¼ÿ=p¯ÿ$]¤ÿRÿTÿ<n®ÿ„¤ËÿÙâîÿÿÿÿÿÿÿÿÿÿÿÿÿøúûÿüüıÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿıııÿüışÿıışÿÿÿÿÿÿÿÿÿşşıÿïò÷ÿÅÓæÿzÇÿ1g©ÿY¢ÿN|¶ÿµÖÿØâîÿõ÷úÿÿÿÿÿşşşÿşşşÿöùûÿåìôÿÈÕèÿ¶Öÿn“ÃÿDt²ÿ)`¦ÿU ÿTÿ8k¬ÿ}ŸÉÿÒİìÿÿÿÿÿÿÿÿÿÿÿÿÿøúûÿüüıÿşşşÿşşşÿşşşÿÿÿÿÿşşşÿşşşÿıııÿıııÿÿÿÿÿışşÿòõøÿÓŞëÿ¡¸×ÿ_ˆ»ÿ+b¦ÿ.d©ÿjÁÿ¹Êáÿëğöÿûüıÿşşşÿÿÿÿÿÿÿÿÿúûüÿíò÷ÿÔŞìÿ¬ÁÜÿ~ŸÉÿU¹ÿ9l­ÿ'_¥ÿ Z¢ÿ7k¬ÿp”Ãÿ¹ÊáÿêğöÿöøûÿıışÿúüüÿıışÿıııÿıııÿıııÿÿÿÿÿşşşÿşşşÿıııÿıııÿÿÿÿÿûııÿãëòÿµÈßÿ~ŸÉÿM{´ÿ7j«ÿO|¶ÿ«ĞÿÕßìÿúûüÿşşşÿşşşÿÿÿÿÿÿÿÿÿô÷ùÿŞçğÿÅÔæÿ¬ÂÛÿ’­Ñÿv™Åÿ]†»ÿIw³ÿ>o¯ÿHx³ÿk‘Âÿ·ÖÿËØéÿèîõÿûüıÿıışÿşşşÿüııÿüüıÿıııÿÿÿÿÿşşşÿÿÿÿÿşşşÿşşşÿÿÿÿÿûııÿâéòÿ·Êàÿ‹©Îÿn”Âÿn“Âÿ‹¨Îÿ»ÌâÿêïôÿÿÿÿÿşşÿÿşşşÿÿÿÿÿÿÿÿÿòõùÿÚãîÿÇÕçÿ½Îâÿ¶Èàÿ©¿Úÿ—±Óÿ‡¥Íÿ|Éÿ~ Éÿ©Ğÿ¦½ÙÿÆÔæÿæìôÿûüıÿÿÿÿÿÿÿÿÿışşÿıışÿşşşÿÿÿÿÿşşşÿÿÿÿÿşşşÿşşşÿÿÿÿÿüııÿîóøÿ×áîÿÁÑåÿ¶Éàÿ»ÌâÿÌØéÿãêóÿøúûÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿ÷ùûÿêïõÿáéòÿßçñÿßçñÿÚäïÿÒİìÿÊ×éÿÄÓçÿÃÓæÿÇÕèÿÏÜëÿŞæñÿğôøÿüııÿÿÿÿÿÿÿÿÿşşşÿşşşÿşşşÿÿÿÿÿşşşÿÿÿÿÿşşşÿşşşÿÿÿÿÿşşşÿüııÿøúüÿõ÷úÿóöúÿõ÷úÿ÷ùüÿûüıÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿışşÿûüıÿúûıÿúûıÿúûıÿúûüÿøúüÿ÷ùûÿöøûÿöøûÿöøûÿ÷ùûÿùûüÿüışÿşşşÿÿÿÿÿÿÿÿÿşşşÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ                                                                                                                                                                                                                                                                                                                                (   0   `                              şşÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿÿışşÿüışÿúûıÿùúüÿøúüÿøúüÿùúüÿúûıÿûüıÿüışÿşşşÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿúûıÿùúüÿùúüÿúûıÿüüıÿışşÿşşÿÿÿÿÿÿşÿÿÿışşÿüüıÿúûıÿùúüÿøúüÿ÷ùüÿ÷ùüÿøúüÿùûüÿûüıÿüııÿışşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿÿÿÿÿÿÿÿÿÿşÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿşşşÿÿÿÿÿşşÿÿşşşÿÿÿÿÿÿÿÿÿÿÿşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿÿÿÿÿşşşÿıışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿşşşÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿşşşÿşşşÿşşşÿÿÿÿÿşşÿÿşşşÿÿÿÿÿÿÿÿÿÿÿşÿşşşÿúûüÿõ÷úÿòõùÿğôøÿğôøÿñõùÿğôùÿñôùÿóöúÿöøûÿúûüÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿøúüÿöùûÿöøûÿøúûÿûüıÿıııÿşşşÿşşşÿüüıÿúúüÿøùüÿöøûÿö÷ûÿöøûÿõøúÿõøúÿöøûÿö÷ûÿöøûÿøùüÿùúüÿüüıÿşşşÿşşşÿÿÿşÿÿÿÿÿşşÿÿüüıÿÿÿÿÿşşşÿşşşÿûüüÿçíôÿÎÛêÿ»Íâÿ°Åİÿ°Äİÿ³Çßÿ´Çàÿ¹ÊâÿÄÓçÿÕàíÿéîõÿûüüÿşşşÿÿşÿÿÿÿÿÿìñ÷ÿÕàíÿÇÖçÿÇÕçÿÔßìÿçíôÿõ÷úÿıııÿıııÿõ÷úÿåêóÿÔŞíÿÈÕçÿÁĞåÿ½Îãÿ¸Ëáÿ·Êàÿ»ÌâÿÀÏäÿÈÖèÿÕßíÿäëóÿóöùÿıııÿşşşÿÿÿşÿÿÿÿÿüışÿúúüÿÿÿÿÿşşşÿşşşÿøúüÿÔßìÿ¦½Úÿ¡ÊÿhÀÿc‹¾ÿgÀÿl’Âÿx›Çÿ‘®Òÿ´ÇßÿØâîÿùúüÿşşşÿşşşÿÿÿÿÿÖáîÿ§¾Úÿ‰¨Îÿ‰§Íÿ£»ØÿÉ×èÿéïõÿúüüÿüııÿïó÷ÿĞÛêÿ®Âİÿ’®Ñÿ€ Êÿt˜Åÿk’Áÿk‘Áÿt—Åÿ‚¡Êÿ–±Óÿ²ÆŞÿĞÜêÿëğõÿüııÿÿÿşÿÿÿşÿÿÿÿÿûüıÿùúüÿÿÿÿÿÿÿÿÿÿÿÿÿøúüÿÍÚêÿ•±Óÿb‹¾ÿ<o®ÿ-c¨ÿ.d©ÿ8k­ÿO}·ÿwšÇÿ¥¼ÙÿÒİìÿùúüÿÿÿÿÿÿÿÿÿÿÿÿÿÂÒæÿ€¡ÊÿV‚¹ÿU¸ÿyœÇÿ®ÃİÿÛåğÿöùûÿışşÿíò÷ÿÉ×èÿœµÖÿr–ÄÿR·ÿ<o®ÿ-d¨ÿ.d¨ÿ?p¯ÿYƒºÿ|Èÿ¤¼ÙÿÉØèÿéïõÿışşÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿùúüÿÿÿÿÿÿÿÿÿÿÿÿÿùûüÿÕàíÿ¢ºØÿk‘Áÿ8l¬ÿTŸÿPÿ#[¤ÿIx´ÿ}ŸÉÿ¯ÃİÿØáîÿúûüÿÿÿÿÿÿÿÿÿõ÷ûÿ¯ÄŞÿdŒ¾ÿ4i«ÿ2g©ÿZ…ºÿ–±ÓÿËÙéÿíó÷ÿışşÿğôøÿÓßìÿ¥¼Ùÿp”ÃÿAr°ÿY¡ÿ	I™ÿKšÿ)_¥ÿQ}¶ÿ‚£Êÿ³ÇßÿÓßìÿíò÷ÿışşÿıışÿşşşÿÿÿÿÿûüüÿúúüÿÿÿÿÿÿÿÿÿÿÿÿÿüııÿéîõÿÆÔçÿ”¯ÒÿV‚¹ÿ%\¤ÿPÿ(_¦ÿ]†¼ÿœµÕÿËØèÿèíôÿüııÿÿÿÿÿışşÿâêóÿ¶ÖÿT€¸ÿ%^¥ÿ Z¢ÿEu±ÿ€¡Êÿ¸Ëâÿâêòÿışşÿ÷ùûÿêïöÿÁÑåÿ„¤ËÿGw²ÿU ÿC–ÿ
+I™ÿ0e©ÿg¿ÿ£»Øÿ×áîÿêğöÿöùûÿşşşÿûüıÿıışÿÿÿÿÿüııÿüüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿêïöÿÁÑåÿ}ŸÉÿ<n®ÿ Z£ÿ6j¬ÿt—Åÿ¸ÊáÿåëóÿøùûÿÿÿÿÿÿÿÿÿöùûÿÎÛëÿ«ĞÿM{µÿ#\¤ÿU ÿ7k¬ÿm“Ãÿ§¾ÛÿÙãïÿÿÿÿÿÿÿÿÿÿÿÿÿÚäïÿ˜³ÔÿT€¸ÿ Z£ÿH™ÿSŸÿFv²ÿ…¤ÌÿÆÕçÿøúüÿÿÿÿÿÿÿÿÿÿÿÿÿúûıÿıışÿÿÿÿÿşşşÿıüıÿÿÿÿÿşşşÿışşÿÿÿÿÿÿÿÿÿıııÿÜåğÿ•°ÒÿJy´ÿ&_¥ÿ:m­ÿyšÆÿ¿Ïãÿìñöÿşııÿÿÿÿÿúûüÿèîôÿ¸Êáÿ~ŸÉÿGv²ÿ![£ÿPÿ'_¥ÿWƒºÿ•°ÓÿÑÜëÿÿÿÿÿÿÿÿÿÿÿÿÿßçñÿšµÔÿU€¸ÿ"[¤ÿMœÿ$]¤ÿXƒ¹ÿ™³ÔÿØâîÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿüüıÿÿÿÿÿşşşÿıııÿÿÿÿÿşşşÿüüıÿÿÿÿÿÿÿÿÿÿÿÿÿæíôÿŸ¸ÖÿP~¶ÿ'`¦ÿ4iªÿn“Âÿ³ÆßÿåìôÿüüıÿşşşÿñôùÿÓŞìÿ ¸×ÿl‘Áÿ?p¯ÿ Z£ÿL›ÿSŸÿAr°ÿƒ£ËÿÇÕèÿıışÿÿÿÿÿÿÿÿÿÓŞìÿ«ÏÿLzµÿ Z£ÿPÿ/e©ÿe¿ÿ£»ØÿÜåğÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿüüıÿÿÿÿÿşşşÿşşşÿÿÿÿÿşşşÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿêğöÿ¤¼ÙÿVƒ¹ÿ*b§ÿ1g©ÿc‹¾ÿ¦½Úÿİæñÿûüıÿÿÿÿÿêïöÿ¾Îãÿˆ¦ÍÿYƒ¹ÿ8k¬ÿ Z£ÿK›ÿL›ÿ2gªÿt˜Åÿ¾ÎäÿöøûÿÿÿÿÿøùûÿÄÓæÿ¢ÊÿEu²ÿ Z£ÿV¡ÿ;n®ÿq–ÄÿªÀÛÿÜåğÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿúûıÿıışÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿıııÿúûüÿşşşÿşşşÿşşşÿìñ÷ÿ¨¿Úÿ[†ºÿ-d¨ÿ0f¨ÿ\†»ÿ·×ÿÙãïÿüııÿÿÿÿÿâéòÿ©¾Úÿn“ÂÿCs°ÿ-b§ÿX¢ÿJšÿH˜ÿ'_¥ÿf¿ÿ°ÃŞÿèíõÿöøúÿëïõÿ¸ÊáÿxœÆÿAr°ÿ Z£ÿ Y£ÿCt±ÿyœÇÿ¯Äİÿİæğÿıışÿıışÿşşşÿşşşÿúûıÿıüşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿışıÿúûüÿşşşÿşşşÿÿÿÿÿïóøÿ¬ÂÜÿ_‰¼ÿ1f©ÿ0e¨ÿY„ºÿ™´Õÿ×áîÿüüşÿşşşÿØâîÿ”¯ÒÿT€·ÿ.d§ÿ#[£ÿW¡ÿK›ÿH˜ÿ"[£ÿZ„ºÿ¶ÕÿÓŞìÿæìôÿİåğÿ°ÄŞÿt™Åÿ?q¯ÿ Z£ÿ"[£ÿHw³ÿ~ŸÉÿ´Çßÿáèòÿşşşÿşşşÿşşşÿşşşÿúûıÿıüşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿışşÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿğôùÿ¯ÄŞÿdŒ¾ÿ5i«ÿ1f©ÿV‚¹ÿ”°ÓÿÒİìÿùúıÿúûıÿÍÚêÿƒ£ËÿAr°ÿ Z¢ÿX¢ÿ!Z£ÿQÿL›ÿ!Z£ÿP}¶ÿŒ©Îÿ½ÎãÿÖàíÿĞÜëÿ«ÁÜÿs˜Åÿ?q¯ÿ Z£ÿ#\¤ÿKy´ÿ‚¢Ëÿ·Éáÿãêóÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿıışÿÿÿÿÿÿÿÿÿıııÿÿÿÿÿüışÿúûıÿÿÿÿÿşşşÿşşşÿòõùÿ³ÇßÿjÀÿ:l­ÿ2g©ÿQ~·ÿ‹©ÏÿÇÕçÿïòùÿïóøÿ¿Ïäÿq–Äÿ2gªÿUŸÿ#[£ÿ,b§ÿ#[£ÿRÿ Z£ÿEu±ÿy›Æÿ§¾ÚÿÄÒåÿÃÓåÿ¦½Úÿr–Äÿ>p®ÿ Z£ÿ$]¤ÿO{µÿ†¥ÍÿºËâÿäëóÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿûüüÿüışÿÿÿÿÿşşşÿıııÿÿÿÿÿüışÿúûıÿÿÿÿÿşşşÿşşşÿ÷ùûÿºÌâÿr–Ãÿ@r°ÿ4i«ÿM{µÿ€¡Êÿ¸ÊáÿŞæñÿİåñÿ«ÁÜÿ`‰½ÿ'_¥ÿVŸÿ0f©ÿBs°ÿ9k¬ÿ&^¥ÿ%]¤ÿ=o®ÿg¿ÿ­Ğÿ¯Ãİÿ·Éàÿ¡¹×ÿq•Ãÿ=p®ÿ Z£ÿ'_¥ÿU€¸ÿ«ĞÿÁĞåÿçíôÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿúûüÿüışÿÿÿÿÿşşşÿşşşÿÿÿÿÿıışÿúûıÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿÁÑåÿyœÇÿGw³ÿ8l­ÿLzµÿx›Çÿ©¿ÛÿÊ×éÿÇÕèÿ—²ÔÿQ~·ÿ"\¤ÿ"\£ÿCt±ÿ\†»ÿT€¸ÿ;n®ÿ/e©ÿ:m­ÿW‚¹ÿ{Èÿ›µÕÿ­ÂÜÿŸ¸×ÿr–Äÿ=p¯ÿ Z£ÿ+b§ÿ\†»ÿ—²ÔÿÈÖèÿêğöÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿışşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿıüşÿùúıÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿÅÔæÿ~ ÉÿL{µÿ<o®ÿLz´ÿq•Ãÿ™³Ôÿ³Æßÿ­Âİÿ€¡ÊÿBs±ÿZ£ÿ,c§ÿW‚¹ÿwšÆÿr–ÄÿU¸ÿ?p¯ÿ:m­ÿHw³ÿdŒ¿ÿ†¥Ìÿ¡¹×ÿœ¶Öÿs–Äÿ=o¯ÿ Z£ÿ.d¨ÿcŒ¾ÿ ¹ØÿÏÜëÿíò÷ÿÿÿÿÿşşşÿşşşÿÿÿÿÿûüıÿışşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿıüşÿùúıÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÉ×çÿ„¤ËÿR€·ÿ@s°ÿLzµÿjÀÿ‡¦Ìÿ˜³Ôÿ¬ÑÿgÀÿ4i«ÿY¢ÿ9l¬ÿn“Âÿ”°Òÿ”¯Ñÿu™ÅÿV¹ÿAr°ÿ>o¯ÿN{¶ÿn”Ãÿ‘­Ñÿ•°Òÿo”Âÿ;n®ÿ Z£ÿ3hªÿm”Ãÿ¬ÂÜÿÙãîÿñöùÿÿÿÿÿşşşÿşşşÿÿÿÿÿûüıÿışşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿúûıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÌÙéÿ‰¨ÎÿX„ºÿEv²ÿM{µÿc‹¾ÿwšÆÿ€¡Êÿu™ÆÿP~·ÿ(`¦ÿ Z£ÿFv²ÿ„£Ëÿ±ÅŞÿµÈßÿ—²Óÿo”ÃÿLzµÿ9l­ÿ=o¯ÿY„ºÿ~ŸÉÿ‡¦Íÿf¿ÿ6j¬ÿ Z£ÿ9l­ÿw›Çÿ·ÊáÿáéòÿöùûÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüışÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿùúıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÎÚêÿ«Ğÿ]‡¼ÿHx³ÿKz´ÿZ„ºÿe¾ÿhÀÿ[†»ÿ;n®ÿW¡ÿ![£ÿR·ÿ˜²ÓÿËÙéÿÔßìÿ·Êàÿ‡¦ÌÿXƒºÿ8k¬ÿ/e©ÿCs±ÿdŒ¾ÿp”ÃÿU¸ÿ,c¨ÿY¢ÿ>p¯ÿ¡Êÿ¿ÏäÿçíôÿùûüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüışÿşışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿùúıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÑİëÿ”°ÓÿdŒ¿ÿKy´ÿHw²ÿN|µÿQ·ÿP~¶ÿDu²ÿ*b§ÿSÿ&_¥ÿ`‰¼ÿ¬ÁÜÿäêóÿïóøÿÖàíÿ ¸×ÿiÀÿ<o®ÿ&^¥ÿ.d¨ÿHw²ÿT·ÿ?p¯ÿ![£ÿY¢ÿDu²ÿˆ§ÍÿÇÕçÿíñöÿıııÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüüşÿşışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿúûıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÕàíÿ›µÖÿk‘ÂÿN{¶ÿCt±ÿBs±ÿ@r°ÿ>p¯ÿ5j¬ÿ"\¤ÿTŸÿ0f©ÿm“ÂÿºÌâÿóöúÿÿÿÿÿëğöÿ¸Êáÿ{ÈÿDu±ÿ#\¤ÿY¢ÿ1f©ÿ<n®ÿ-c¨ÿU ÿ Z£ÿL{µÿ’®ÑÿÏÛëÿòõùÿÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿıüşÿúûıÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿØâîÿ¢ºÙÿr–ÄÿP|¶ÿ<o®ÿ4i«ÿ.d©ÿ-c¨ÿ*a§ÿ Z£ÿ Z¢ÿ>p¯ÿzÇÿÃÓåÿûüıÿÿÿÿÿ÷ùûÿÎÚêÿªÏÿM{´ÿ![£ÿQÿ!Z¢ÿ+b§ÿ!Z£ÿQÿ#\¤ÿT¸ÿœµÕÿ×áîÿ÷øûÿÿşşÿÿÿÿÿışşÿşşşÿÿÿÿÿıııÿışşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿıüşÿúûıÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿİæğÿ«ÀÜÿ{ÈÿS¸ÿ7k¬ÿ'_¦ÿX¢ÿX¢ÿ"\¤ÿ$^¥ÿ1f©ÿT¸ÿŒªÎÿÌÙéÿşşşÿÿÿÿÿşşşÿãéóÿ¡¸×ÿZƒ¹ÿ%]¤ÿM›ÿTŸÿ"[£ÿV ÿPÿ(_¦ÿ^‡¼ÿ¦¼Ùÿáéòÿüüıÿÿşşÿÿÿÿÿüüıÿşşşÿÿÿÿÿıııÿışşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿâéòÿ´Çàÿ„¤ÌÿXƒºÿ6j¬ÿ Z£ÿPÿQÿ Z£ÿ.e©ÿFv²ÿn”Ãÿ ¹×ÿÔßìÿşşşÿÿÿÿÿÿÿÿÿñôùÿ±ÄŞÿg¿ÿ-c¨ÿPÿTŸÿ Z£ÿU ÿQÿ-c¨ÿeŒ¿ÿ®Âİÿèîõÿÿÿÿÿÿÿÿÿÿÿÿÿûüıÿşşşÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüışÿûüüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿåëóÿ»ÌâÿŒªÏÿ^ˆ¼ÿ8k¬ÿW¡ÿK›ÿKšÿX¢ÿ8l­ÿ\†»ÿ‰¨Îÿ¶ÉàÿŞæğÿıııÿüışÿşşşÿøùüÿ¼Ìâÿs–Äÿ7k¬ÿU ÿU ÿY¢ÿSŸÿQÿ/e©ÿiÀÿ±ÄŞÿëğöÿÿÿÿÿşşÿÿÿÿÿÿúûüÿıııÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüışÿûûüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿèîôÿÂÒåÿ–±Óÿg¿ÿ<o®ÿX¢ÿH™ÿH˜ÿX¢ÿCt±ÿt˜Åÿ§¾ÚÿĞÜêÿêïõÿşşşÿışşÿşşşÿûüıÿÄÓæÿ€ ÊÿFv²ÿ%^¥ÿY¢ÿY¢ÿRÿQÿ1gªÿl‘Áÿ´Çßÿíñ÷ÿÿÿÿÿşÿÿÿÿÿÿÿúûüÿışıÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿışşÿüüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿëğöÿÈ×èÿ·Öÿn”ÂÿBs±ÿ Z£ÿH™ÿG˜ÿ Z£ÿO}¶ÿŠ¨ÎÿÁÑåÿäëóÿô÷úÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿÏÛëÿ“¯Òÿ]‡¼ÿ8l­ÿ(`¦ÿ Z£ÿQÿRÿ4i«ÿo”Ãÿ·ÉàÿïóøÿÿÿÿÿÿÿÿÿÿÿÿÿúüıÿışşÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿışşÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿìñöÿÌÙéÿ¡ºØÿr—ÃÿDu²ÿ!Z£ÿG˜ÿF—ÿ#\¤ÿZ…ºÿ¶ÖÿÖáîÿòõùÿúûüÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿŞåğÿ¬ÁÜÿyœÇÿN|¶ÿ3hªÿ Z£ÿOÿQÿ6j¬ÿs—Äÿ»Ìáÿòõùÿşşşÿÿşşÿÿÿÿÿùûüÿüışÿÿÿÿÿıııÿıııÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿışşÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿïò÷ÿĞÜëÿ§¾Úÿu™ÅÿEv²ÿ Z£ÿG˜ÿ	I™ÿ,b§ÿh¿ÿ¯ÃİÿèîõÿûüıÿışşÿşşÿÿÿÿşÿÿÿÿÿÿşÿÿçìôÿÀĞäÿ’®Ñÿc‹¾ÿ<o®ÿ Z£ÿLœÿQÿ;m­ÿyœÇÿÁĞäÿ÷ùûÿşşşÿÿşşÿÿÿÿÿùúüÿüışÿÿÿÿÿıııÿıııÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿüışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿòõùÿ×áîÿ®ÃİÿzœÇÿGw³ÿ Z£ÿ
+I™ÿNœÿ7k¬ÿu™Åÿ¼Íãÿóöúÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿõ÷ûÿìğ÷ÿÛãïÿÀÏäÿš´Õÿl’Âÿ@r°ÿ Z£ÿMœÿTŸÿAr°ÿ€¡ÊÿÇÕçÿüııÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿüışÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿşışÿüışÿÿÿÿÿÿÿÿÿşşşÿşşşÿõ÷úÿßæñÿ·Éáÿ€ ÉÿIx³ÿ!Z£ÿLšÿU ÿEu±ÿ‚£ÊÿÅÓæÿùúüÿÿÿÿÿÿÿÿÿşşşÿëïöÿÖàîÿÂÑæÿµÇßÿ¦¼Ùÿ«ĞÿgÀÿ?q¯ÿ!Z£ÿPÿY¡ÿHw³ÿ†¥ÌÿËØéÿışıÿşşşÿşşşÿÿÿÿÿøùûÿûüşÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿşşşÿüışÿÿÿÿÿÿÿÿÿşşşÿşşşÿøùûÿæìôÿÀĞäÿ‡¥ÌÿKy´ÿ"[¤ÿQÿ)a¦ÿY…ºÿ“°ÑÿÎÚéÿıııÿÿÿÿÿÿÿÿÿşşşÿÜåğÿµÉàÿ–±Ôÿ‡¦Ìÿ‚¡Êÿv™ÆÿZ…»ÿ:m­ÿ"\¤ÿUŸÿ(_¥ÿP}¶ÿ‹©ÎÿÍÚêÿışşÿışşÿşşşÿÿÿÿÿùùüÿüüşÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿıışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿüüıÿìğ÷ÿÆÔçÿˆ¦ÍÿHw³ÿ Z£ÿV ÿ:m­ÿo•Ãÿ¦¾Ùÿ×áíÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿ×áîÿ¨¿Ûÿƒ£Ìÿo”ÃÿhÀÿ_‰½ÿIy´ÿ1fªÿ Z£ÿV ÿ*a¦ÿR·ÿ«ÏÿÏÜëÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿüışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿüüıÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşışÿïò÷ÿÆÔçÿ„£ËÿAq°ÿV¡ÿY¢ÿJy´ÿ†¥ÌÿºÌáÿáèñÿşşşÿşşşÿşşşÿÿÿÿÿŞæñÿ¶Éàÿ’®Òÿx›Çÿf¿ÿT¹ÿ<o®ÿ'_¦ÿU ÿRÿ%]¤ÿN|µÿŒªÎÿÑŞëÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿøúûÿûüıÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿüüşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşışÿëğöÿÁĞåÿ}ŸÈÿ;m­ÿV¡ÿ)`¦ÿ_ˆ¼ÿŸ·×ÿĞÛêÿíñöÿşşşÿşşşÿşşşÿÿÿÿÿíñ÷ÿÕßíÿ¹Ëâÿš´ÕÿzœÈÿZ…»ÿ<n®ÿ&^¥ÿU ÿQÿ!Z¢ÿJy³ÿ‰¨ÍÿÑŞëÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿøúûÿûüıÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿüışÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿôöúÿÛäïÿ®Ãİÿn”Âÿ5i«ÿ Z£ÿ9l­ÿv™Æÿ·Éáÿâèòÿöøûÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿíñ÷ÿØâïÿ¸Êáÿ¬ÑÿhÁÿEu²ÿ.d©ÿ Z£ÿTŸÿ!Z£ÿFv²ÿ‚£ËÿÇÖçÿûüıÿÿÿÿÿÿÿÿÿÿÿÿÿùûüÿüışÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿşşşÿûııÿÿÿÿÿÿÿÿÿşşşÿöùûÿàçñÿ½Îâÿ«ÏÿWƒ¸ÿ.c¨ÿ*a§ÿN{µÿ«ÏÿÌÙéÿïòøÿûüıÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿùúüÿîò÷ÿÛäğÿ¾Îãÿš³Õÿu™ÆÿT€¸ÿ=o¯ÿ.d¨ÿ"\£ÿ&^¥ÿCt±ÿt™Åÿ°Äİÿáéòÿğóøÿùúüÿÿÿÿÿúüüÿüışÿÿÿÿÿıııÿıııÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿşşşÿüııÿÿÿÿÿÿÿÿÿıışÿíò÷ÿËÙèÿ ¸Öÿr—ÄÿIx²ÿ5h«ÿBr°ÿm’ÂÿªÀÚÿáèñÿúúüÿşşşÿşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿóöùÿáèñÿÍÚêÿ¸Êàÿ¡¸×ÿ‰§Îÿp•Ãÿ[…»ÿJy´ÿ=o®ÿ;n­ÿM|µÿn”Ãÿš´ÔÿÅÓæÿßæğÿòõùÿÿÿÿÿıışÿşşşÿÿÿÿÿüüıÿıııÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿışşÿÿÿÿÿÿÿÿÿıışÿêğöÿÇÖçÿ·ÖÿyœÇÿ`‰¼ÿ\…»ÿq•Äÿ˜²ÔÿÈÖçÿğôøÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿğôøÿÛäïÿÉ×èÿ¼Íâÿ³Æßÿ©¿Ûÿš´ÕÿŠ¨Îÿ{Èÿn”Ãÿj‘Áÿr—Åÿƒ£Ìÿ¶Öÿ¼ÍãÿÙâîÿğôùÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿışşÿÿÿÿÿÿÿÿÿıışÿïóøÿÖáíÿºÌâÿ£»Øÿ—²Óÿš³Ôÿ«ÀÜÿÅÔæÿâéòÿùúüÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿóöùÿãêòÿØâîÿÒİëÿĞÜëÿÎÚêÿÆÕçÿ½Îãÿ³ÆßÿªÀÜÿ¦½Úÿ¨¿Ûÿ¯ÃŞÿ»ÌâÿÍÙêÿâéòÿóöúÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıışÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿşşşÿ÷ùûÿìñ÷ÿàèòÿ×áîÿÓŞìÿÕàíÿŞæñÿéïöÿõ÷úÿşşşÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿùûüÿóöùÿîò÷ÿìñöÿìñ÷ÿìñ÷ÿéïöÿæìôÿáéòÿŞæñÿÜåğÿÜåğÿİæñÿáéòÿèîõÿñõùÿùûüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşÿÿıışÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿşşşÿşşşÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          ‹  	nˆ ÿÔ½iWÛÊÓ8øOšŒGúYvlÈ†…âÈ¹IÈFÌå—ÓZŒmÙ–ñ˜àï>UÕ‹º%™$ÿç™sn.–ª[½V×ÖÕÕ§‡õÉ4§óå$®¿xëŸÚÍí]·»‡ó~:¶™8¿®Øt3ô¿Úó^æ¸>2Ç›ÆóÅtlíË 5;Ò>s~ñÔÍËÀ3x¨à!TF¥¯è?otTlÇ³Òv°úE<ÿ
+ÙlÙkßÌ-ßÛìÈ‰fÂsà³–¦ãù4R;ô§”µ;,k7–QÇY<ûF1o¬Ke;­­&´ù›>vz^jıÓ\ëõ‚¡ïã#{@¹JûÑfÃ¡¡ğÜ[ä“ò"ï²;=†r6‚¥VĞÅ!~ŞÜ1:Š£xóÖ¯ÀßŸ3»á²éÅbç3Çë¦S›65wà5ö‚ú0_Ì{•Jèñ#?¨ÏzıîÜvÜĞÏ¢z/ ­•íÇï¢úçéŞŞ³s¯ßµ§fŞŠ¶^0Y²9_­à­¹= É²m›‹q€íc0Ó/Cœìƒašõ9ç35ç›L´§m3€¸ãøzó¥ÍêÓşEoî²zÎçé&k¼Wªø«¿+^”zÖ8HÊÅ§y:Åâ@\ÿáÙÿÎ«zª¦~§ÉİˆXì¿íÙ_. vÇíúq=JCp·çŸY0vQz=¶\|šLãÙŒ?.&Ö¹Ã{w×ğæÓ%”à vë!å<~uE8¿ß ØıÌ,ÇKêıqÎ¡»Õ€¼êÇ×~Œ©³×,‰qn’zØcSœB_Ätú!V9)†›ıñfä$gÃs?‚?«GıÙ„ÍÃ¯$qVñpoÂW‹ÀîFV*FãƒŒv¥ÂêİştMx[,‚`ÏDÙ8Œ‡ ü]u#œO‡ÿÄKÀ*xaÃ¹z&¥7Ì?ŠçL%=„œñüÅ|>í‹y\©ä ¶ÅÊÂñƒ)¥ñcaæº80§uĞ¶Ò±U\œUˆceœ_+ÂŸÀŸ_ñ¨Õtã›Vså.ñ=Äw«?¶àg„Ï“ÿÌ!C¶Tn—‘Ì®ûX$<…F¾Ù¢Ÿmşó¨E˜tp4Ig}ür6gÓ9àF!a1‰`TŠÂÊíí]HYòm<Ir<Y`%´ä=jÊoÑcşó¤õéÂV4ÉùÅ?•Ÿµ“Xe+ë_Ã¢×¬TNt]5¹¥^ùjjÁ3‰%wwLb>rtÁ'‰,•ÊÎ¶$B`ˆÃÉ‚¤_¼3V8ì‡É_\^Tó—åàókU˜ ¤@Q¡öÇH\İAPŞ=à//áÇÂÂ«uË}…°†ûš'%ßÌØ¤o¹oõV;ä#MÌÂ_pFºÀ–¾ôoIÜ(pÔ >"ŒBèÀZDŞİ!yÄeT*Öä™¯híæ„MgñQ£&"È…„ŸW`¿Ìøi@ÔBÂÔpÒ¿‰‡ïğ™>bu(V²ÇJ¥‰³•êcøƒR4K½ÉJeFF`]…nñzQ\°šñÈj•6aúQÏ¶€ğÁòø5›/‡qËºêÏúAØŸ/[½~ÅcO.fé¨ƒ7ìãZ/F.ÕjxEıñ<€÷Çğ¤Ó(ÂƒÈmğ¬R6™À";èõ‡pT/ğÃzÚíí9¤œŞ¸‡`ÅT³i<’„‚sõdB È?ŞŒã¹GwwQ¥e[Ï,Ç™^0>ü(‡ÀhÕ‚ôF^’v”Ä¨×@Ã:Ì÷~4ï6\ã¯+€¼i å½¡ï…üğe€ÍˆıWøë•R‰ëV#ùCÌ ôë•WÉÀ !3ÿËå  ò‡U&
+¼¢ ô#|œ¦vÁ8)Òhì°”é#ğáK–«[{Øq?:Ş€Áƒ&¸Œ:XILû¸Šèé%°Rzxç£(ñ™—á|¦Jt–9ê¸ÁÒñfş¨“‰nŞ¬>d™Õ¬şªï›â—¬”ØvÖ<wäÿƒ=Óp‚CÙ¸³ğÜgMV+¨ïÈ5\Š)Qp'Ç~Apô³ÒRÆC>oT7ÑQYp®êÎ}"¢jª99^_3®zÍù7d‡ƒ\‡¼ÃŞ†©Ü¤Ê/×U¾1«ß1j§¾ïó&¦¶~`0K²§Ì}wXÈ!D;‚åY€ßñô§ãH@i%“ĞÚo;ãR-õè5Ÿø>ôŸÊq¨áHŒHBGØ2º'‰§-}²…ß6ŸòŸgôƒôv£(ó2î²ÅÅş’•C­r­ÍWğçemĞ(üU×¢ç;HäŠë2/¥ò¢–‚4ÏŞ~½![¢22
+“@EàÓaJ¹¸š»K;EkÀÜÈE©şŞlé€U#ÑY©iA1#¸»£éRC#?¼BÕ³uşŸ¨N·›­†s§ËÍ§zò¶H–‚Dó™úH¤*‰c·©'?ƒd™ü#5¨x‰t—rs…‰4+¤	‚L(„Dƒ©ÿóTñb%‚sx»ù¤õH<=k=ãO»ÍVó)(ì(òÈé¦	f\Ç\­fuPˆ•z¨‘lï=_ï/Š‡ñ<æjø;ãmEm~"Ğ|È€'ŸYÃyÛÎÃĞ:wç³ `0	8YŒ6á'”Q›¾0V çßÚğà¾Eò}ONüN ¿GûüĞÍï3x ¶Î!ŸvøïlÁAà“Å¬'Ò‰…vŸ¹ßÛæ°i<I§T„jÍyWéƒ2ù’"E×ı13zƒ¢/ÆÃ”EĞCñpÎq=AÎ5î`Ï€un˜v4sÊ¸ƒı:B½Ô7Û©ÎÊˆP3ŒÇj¬±¼z¢O¥ZQé,F¶lä4&=›b©¨2üxo‘ŠÕ‚à£Í:B°Ta8*#*XBüAiÒjYÈ/ú!Q¨‡ƒY:ö6QiÆÉ:ùúºöÌÒ&ÿ#M¾‚kEß÷ìíÇÎİ]Ñó3xœsps#nn×›ğvÃSÓËÙ©oÃË?ãeA’Vİ$“?Ràï¹yNÔÓ¥zB1&pÒqa9'¦ì‘\1ß²àáPª"é6—E i#f[n9w‹:^äÃ(´ƒjµøMO%ùÁJ ü:æZ‰Õ`Š?¹B>í”¥_ªtX=–”`*‘è— õ:dYìÑø2+öª,·§
+“—7«¦àÊ!€³6ZÀeFNU03”˜€7µ¿Ì§ (€Wµ~ZÕ %ŞGÎp%ˆÁ}Ó!¥5YY Œh‹3Šo»6N4½ñ\)lùõâúÖg°b»ájª‡€…U@Pa¤µ¨Ç‚(éJ?ğĞQaä¬«Ä\:½»³@×Ñ_{×sõ
+MŸ‡|¤·dÖaêle­¥¥Œ244IC ‘¨\ô¥T¦”+lıç=ÚÒ$`¢m±ÕÁÅĞâÅ‡¾Õ›Ï'³ÖÃ‡d¾˜§éğ:M/†hÇ=œÀTµÃ²¹ÉÄÿõâãÇU¥?ı_Ç/_­*‹+~gUyïªP²Ëp‘şB§8»¢ÅŞaEÀºDû¶ÀŸ.ªf@¥æj2›½®bĞ’>ö`I7Ï{^¯Zå&ş{6ïÕ»Ã²Ğã”ÙÎlù}­ç8Õ;ô»g½sÿÀS‚OÉ¹?\¬¦´ûú í©«UXõ7‚ªıdØE9=!h±ò‹ZÓñ>Õ$ñ:b’IÃ4‚÷Ijµ`!`ÖA!®å&Tu85Œ,’59m¸šFì"ízÿŒ!¡ƒU/GÛww6¨×ÄîPÏÇÓi:õAä©Gc—¹”×A­~«UĞEgSXK ‹DãuËoŸ¨¡,4P…’RdÈ"‚êx!R`¡Qòµ$ÉQõI9#ûŒŒ3ôÌè|Ù wÚñ¿\Ø¹tÇıáğ|¤"¾rËûYGás²ı‚†ª­/¼jĞ¾L=3ûÀF±€pØºâ× |ërå¼#óÀ	E+„y†tğìÜ;ÍÒ¥ WÃ˜4µıåWvåÚÖÑëÏ/Ş¿²œµDºã@)Å­¾r®˜A_™ã&>tÿ¬{î%€ò†ÃQ&ù¡ßaÊeƒzowlY$øÚ=$:‰ãİ
+…W:òé¥Ş—´÷áChÿØo<µ­_X-.—ÇÈñ\p–µå+¢9-íyF/wwÇ¯Å
+S<}…ÄÍÇ§öuzÅ70¸-úÒùÅ³ ‘$l\A‰?Ù´¡$·íÈ¾x¸ ‚azS›õtómú OÜŒ…²°°|Á#
+pC¶´Î5Ëâ7¹xÑ6¸ïĞ„S…›†÷Pfh“4k[E%òì¥F- eèé;ó§2q÷» 5õëªãİÚ’fU?d3éë/‰¬:¸Öè²|=¾\°áÌ_¿í_ûLpøå¬ö4·´:$6r®ø÷E3ÈC³Í¨ pWŸC¨+W'³n}—Ö­ÄÇ•ƒP¿†‚3ù˜!ò€÷NêxüE3U aÔJ•yafN¾A©ï\U2íum5Ğ,r€š¹±Æp¡Ü…Œî2™—>GÂ7DĞ–!	KUmPUı0´ÿ¼6¡Êà7X[ k-=–¬¨ô5é—ÙfHÀ8¨8%Õ2ßï‚0ÓCƒ‹¨J¡ÚñÜj¬ˆ/CÎî–¯úT©lõhÆøÊërúÃ†ãÜ…vÁñ>‹’ì™öàÏ˜¶YÕ6Ğâá^(iñh±êßÙğœºÈ±ChÀ !CÀ¯! ¢Ëßı¡Ëg›êEVçÏ®Pr<÷€FÛé²„øÙ-12Ú£Ú™^;ä|†Ub©ØØ)dqfƒËZÆñ!6ïMÓëÍWÈ-Ò¯Ø°m’i×H9Ú<†æ<–OZØÍÆ§-Tßu×Æ‡ËJbŒ œ–zr4p÷ËU¼ÔD/¡@£Ï¿^6 Ø[]ÁL¾ d±«ƒê\pŞ—¯	1'«?…®9§÷(´›v®DyÜ¦åV°6Ì_€m“ çÜi_:32×€/‰,b,ÕiG\*	€òş¶@Õê=.‡|´RÁl:?Ñ^ùçh>káê?øëmıZ«‡‚¨6·ÿÓ·Å;İÌx»4ŞÁDiÀ/à¢Àú@Ş«€fc¹À€\„gŠGüÈSWŞûĞ~Â½ÛljŒ2NƒãÃĞÂ!Ä~¨ZZ[º©±3õ¶G
+-P=\M^RÈ–ÙAa¤;)Nˆu¤4ğM<9+o¶™iÈMÕê7ğ°Ä‡åJ§ıª	©¶ÇIÂã~ºã®\æb«}JŞÎ7´eÅ|[¼€¶§ I7ğH[Sø\e|`sPÉÃúø&¾@2ß¯Z•lØõÌa	²ıÔ­Ğ¡ab(è#ıåîûÉ¹¹ëŸ»¶£m‚l¤ÁÄ¸y ÜÀÿQıÓ•í´Ñ÷fr(í´®Ô#	)±‡n±óŒ"HYk¡ÉO¤R‘»å›Üw&ÀëKgÅo¤5\À¯]x~ğ™³­/_| ¢;2××ø†¶nmëßÅv£ HO›—g×iÃĞ~‚µ´ÕtZvLÉë§K0ŞÃ:(Ğ0f •‡l2‹mÈˆ{¡aıÃÅì¢ë‡ÜÀÜ‹CºQzAÏ	ÛBZÂÂy<µÜF-–ª5dœÁšCtqP±EÌŠÑÆ3ºr¢Pú)i“ß7'ÿ‹Ø­màø’!Í"¤¦‰[Ôuéf^ˆ¦ .ÂÇí3_Ä‘©¸t}}XErºõhÁøI—úş5İOÓüÄù2oĞÙÚE^£ ï£÷Ñ8úšÒXYÈæ"¿WG—1PºôBİ@PÍ¥Ï8ÒùÖÏŞÿeU¹6ôCM³ƒ>xC˜ìw‘=tZ˜öÙ¶>~~e¹¿úQ+ùj¨móßİ‰A	Òhi`Õã÷•$w.bÃÀ‚Òçˆ‹#Ö¦E"|Pmnù¡r‰#pxĞó6 e£Á º‘_£?&w¸Š	M„Õg‹`Æízw#B,Âé,_±épÏêÈWÿe["§
+]$”‡6IÜ¦×$èóC—:Œc9ö­ë^×fÆ-Ğ#j×S6ñ®ÓiDO¨è!4ÉVm×+zSE²€šx´ƒü6j]6ê—›ô<ëßÆüéšÈ«€"ëÙD¬Í§l<ö2â¯Q¦SÆ÷úã9,ij6t{“Ú+_4·şÈXÀãéVÉP¼Fı)GâM"ı›â®×€ÈÇ©ç$@¾!]Ø~!ô‰|æßÈ7ñ‘|¥¯¸ë~Tãõ }i‚øç&Ë0!X:£$$J2`T‡ á˜v‡éuí&{\ZÒ@	hånè2–$L€j‚¢`«~PµZV5¬Z%õŸ)®tªªÎfˆ¿şØ“^=²ÆV–KÁ|(˜»ìcMìaËb‹yj>?-ùütıç5œù
+lŸeÏ
+D*_¼ë, }ná|#VîÍG>|Eº¢)™²@œ8Å;=`¸)Ö6ø	YmÃ¸?´ID1ƒD!j 7lynÅ‡tûÊ€KFÂ®",1î‹¿J»ãw†J¤ H”¤¾™˜ğí`a¥agMñœúâNq…KØô…±;“ÑŞ”YFÇyn!µÈ³’4×„gÊ6§…Ş}«œ#©¤"·DáAç–a[yn­ç–¡·@$Ó8¦À…³Ø«p.VBV‚ÈBÕùjæÃä›ysÀ+ÛJ“7`6Ë|zú<öÅ<Â«‹šÒİİül±6Ÿ£–Üà¼ÀCÈé¿‚²å¶á‹LôÙ"FÓN·Ğş›mN)lÂQDr*JöüHØÓÏÕÓ·…Ç€·2Q‰ğE¬¾ˆÛ±¯wÆ(ÅÀÈ¸*¥5£&öŒÄöÄs³qÕ[Ñsñ9– ¡°4èïoÚŠ¨£Êª]}‰ä®Ÿè@U™ZÔş/­Yl~¹”ÃıÈ-$ nú16åBè©¶×BbJzŞFoØ¡ÌˆIP‘×.NrAZà÷ğèíP"%ß„¢âfn˜,®™Ÿ—İt4Ëv¿"s\‰
+µ¦‹Fœ!Ê–]­vŸ£cÛVDöƒ(w
+wW@v'®Õ$™‹«Máe‡UHÄñâ½HÉ‰¿/®Z•ó¯ÄLFå¤‘zëFİÔ|/Y•Û¨äX6cëÊHD¾-áhWÏÇ­Ó©×¿“Dæ³%¥V_7:VÁ:+#Âo{¢¦»;dzZS¥Ñ¦¼pÑ›bØ<êé™ØšæĞFÚ|ÁÊÜ’çL¹¨2è ¡Giq 9"gœ)r×dÔÈAG—DQ¬·ÕTÌùD\÷‘¤\È×˜Š*:=ÂÔQ*_o^"ÿÕ(û(GÙ¡\²Pâ	
+'‡ş_[VÖ‹kÚik<GyãanGpÅ”4ÂH
+Úô±¹$1-„¨8 ¦0“K‹yÈò`0±‚#^ÁU 
+ÿ`ş!_ø‡òÂdáGT¸À¸ôíÚBú.~ëb%äwk	A[ŒjK8&”2Dn<P|q fmvàÃ(rÎdÖ‚3Ê%YÌ{’`}'Qö—YŞ¼ÌqKj0Ç h¤d® Ö°ĞÑBÏÑ.—m¶z·dçĞúœpDàp2†ÂÕ.< Zzr“ÅAµÉ¾i¹R‹)Œ¶|ßww;âYG/;ÉF2©ŸIŒ#ùlŒ\5r}ğ¡òŸcÍGıšÈëx;~i•†¨çê/PªÁ{¡`¾‰NH¿Ô’Ÿª5+¾QüØi5‹ÀÃE¾¤•9½›>$“&—œˆa‰kÖ­™†F;DıŞ0«Æeè*:à,4q‡Û˜ñf±;~Ô×qÒºôÜÅg4ôä&Ì°£µ$È9n„fŸDqqO±áøïø´¥ “²—”}1<yÃğKåÆœBdÉhåÌË™Hª5ÉØøÒs0/zE‘yDØ5“"Í|)\–ËQ›’¨€¬•Ë6ac_µƒä|=C¾X±CÍG¯é~º˜}˜œ“ËŒSfV„5´‰¥pÙƒ;Âñ|E1Dd‘]Š<Ùk5¾İÈÇSôVÊNGıòæÇÏÍFİİm4üÜ€`ïÆ°DÏzışA5ÆE3­V	%úr†ºV”Ú²Õ›HKY?{$5Úº£Pø¹NpÔ ì(\Ïq$¾0Ye{«Ù2z"¾¿yùÁîŞUERV‰¬—q»<·Pgf+• øù‹·tÌ”I“àx¿È6(Ù¼b;×gn6¶ôÁY¾“	^$(Æ¤V+ÉLùÛ¸Gn¼îï)O˜¡gäßo´äT+Q˜‚Húœ	›tÔÜµÍ)ìvÑü#½^¤ÿ“:G°ï[__ıøúâó«à†¤-™!Éœ„é§Ô¦#Í]ïfş8'z¾1…L„·¬-äëº8G&=)ÇQğï¦šJVîXd»šº”Ô·üLT÷•`Å·L2ÄäŞ4˜äSô7«1OÛ)¦Q »©,ĞU³FÅ†¬7B;FM.Â¨Ñ:’[ØKRJ/Ú—-ôyÄóóºÖ%Ş¥(Âœ‡8­ÀĞÍÛè¿««zAŞüE6¾QlË|¼7Ÿ±
+#Ö¢®-m4[}‘™ +Ğe§Ø­ƒtÛÚ G˜‡º
+´¸á ëí[Oİ¨,ù˜N,º°q…âõ›Ö—Ho|–(:a‹’²C¾DŞêjÒÃ˜Ñ-yÔB/üùßŸVaæøã‰­•Ï+S˜Y>ìĞ!Ÿ·†òFÿùdÒ1ñû¦“2üÅ„j]ˆ°ÍÍŸr.Äez1]ï/g2T®í EÛ¢ÊH–ÉÑÓCLA”m“BKŞqõ’ï¬ÆÊŒhø‰÷Bcµ(y¾	$âÂÄûo6nÑıZyñ™ÕÕøáu<^Ùï€¬¹Ñ5p×ÍØ®åç@ğ¹ÙD•ÎúwŒV~PgÔ†.s»ª®µWÃœ¢Et9Vaä…rûtÄ³!ÿİ–5¾‰Ãƒt4bH8—¶Ğ$µï€ÆRøj@'LHœ	ê(0üÜ~r$,äÂ8„Êİ\\nsblpk£ù-Îv®ÅÃXÓOX…Q½?æCÔu„ÆË;'/6Évp§*,Ÿ]¿çåÛ±¶ß¨,•Z6s-!½ÌlGW'ØrŞ$’ëcÅ´ºªJÛFÍ¼ç¬x	 ªwÍ^•AU:ˆÉ™·~†A÷ĞD£^‚"ºtÄk_# 0‰ıÙ¨uÆä~ôq-íßà&²Æ^x0"ks¯‡k@qf#ª³qØK§¹£ü&É’š9¢äİ‘/à´I¸$*fÒCOêÑsè9¿p`æmôZİQmH(Q$ç‹ëóTH«˜ôb®xAÅ>ï	-LË('nXëJ9+cä€Ø@×3x+rÚøEaJ.ñt)r~YLğ€ °&Í¶úãY<¥eˆò+W—–ˆõÅ
+Òóû"¿¾‡E"zJ#ĞÃÊÃ×ª°ÑÄ³œºGĞáÜ >'à…	üwĞk/˜>7À€éÛú`Ì°p¯´'Ô¦\OVxØ%ñ¥é¨%(†ahô¯[ÌGü—‹bÕXùºú¥èÇ#ÎtÙ9Ğëa¥²ì±Û=«Õ0d·x#u^G¥ªUJ/¡÷á»»áŞÈÉv”†®Ù6ÀGµ³d¦Àqiå­ÆñÇM{#é¿ÙÜHzTüv»ñk{EŸß—çÍ½²!&Ù˜k»bC½Ù#AÒŒÂ6¶¬µ¶Å«Û
+ä‡Êíùj–dÇÓIâ¢…ÇMR²’-¤n1p»º°ÉE÷nâ¢dĞİã(]·–Ñ´. ;4˜ïF†àØp»hÃ4=ø¼ªÌ„.íH+ê.Ú‰6<trh’`uaFCš3tvˆúSË¡öpmoj?&fú½‡âˆÅÁÛÖt>´ZÖp>Å“`tö1Y£9J!Oi¾Üÿ-\¯CæQd?Ãmµ
+VĞb¥ù®u›È¼yï“¨ÜÏs™G¨faç±¹z>—SİÎÜz~ó	ÒÑòí>âQÎ¹.¥ó@&{~e±Ş|4$o!#¶"ó¢ÛH­k¼º-ÿ1‰Gä““IıX	ãÜ¤†‘\VBÜá {	˜R4•Èúú‡@”üİ&ïE§…w_»j‰Ş¯Ìç¾¶èGú\Djk‹ßz˜Ætd ‹@üi!¥Iø¦´åC¥±ä…6µé/@ { Õp›%tƒüd,å™ÔM:éä¡.*Ãe[W§º Íl<!hƒröñ7h­•nIÎuÎ,›…íyßÜ—÷
+ûŒ¢¿[H'9½b›¼É¸U-r´‘e3cØ~›Ñüä6o‹¿J·}u34t =Ô0;“Ám/[~R.æ'‘ÒìøjzŸ{]xÏ)ñÀië†Å‘ƒÜİyF…<Áy®&aNì{BøFGâß·ÊÈœ‘3P9Igš/˜½ÒO¦¦Ür§‡2¼öµÔÛ<˜Æ@nK+]K Ÿ4p%”u¬\!…&4±®@;±7”Â˜^Ò¹¿z‚(Ks¿ºµ¡¡Êhæ§9ÃqÜ Ë#j$æ	„ä^®‹Áñ^³ğŠ[/lkßÒÜtÌ` ´¬€Ga(<\ñšõDºQÓ¡ËÔ!34’Âp”ó¡•#qËSOétÜÛC
+×£aı©‹Ûöo=<\E+ Å
+ó¢1¸üßi
+ûƒ¶„%mÑ4£)1}t—´µ“ï[3yæ!á{¡^å®±Ø†é–ê©~NM¿ğ—“?¨0¨8!;>^R0"¢…ğvqH±(Æ%?…eMøiUñ4ö şªÏ	ºœ‘vºdÄœÍ@(Š's”^¨•ñÖ$Ç6=‰áĞÑ*(}r6cdò†‡Ê;L;æ§;(±d©S‰	¤ñ€²üËİX½¼LT¬m’((¦*[ÃÅ´ÊĞH¥}Vd	Åš¼¹¯&“É¿},ùzKk4×·6¤‘!ïç>§ı	E¤³õÖÃ‡³Ù°~H;ï‡V!¶ğp0{¦ãnÿâ!Å¨f–§
+.xıN=:õA‹ìe%‘…äRÜÜÕaÙñõ®ƒ–uÛ«õØx^›×ú›NÙ²ÖÜİİ¶Ü~–:ã©!‘ƒ~éÏ }PøÚLOîûş©åïûÒG÷¦×nj£FmÖàÙíÇ‘å1ÿrk€,i¹i¡œˆ-ûXÈ3ËˆD‚Oúã%õ¾,|!S¦˜ÂFZé3‚L5È!A¬Ak+‚\hk„Œ‡ä!±şÕ!]½®[„Dz]/è+½œ}„\,4ÈÆ‚zúg/	Ò× ¯2`µ^Ê4ğk÷õñ}#2Îk2·L9Ä”DïÁBFzëŞDïÓ?4zãŞ!$Õó¼§‘ĞÛõ!½äc‚è-ı( ^Ô'4r~& ^ş„LõQüŠ™ç„ záß¢ëwšŸ™ù¹^Î)AôèD/çAôºØ@‰	¢çÙt¥İh+àzĞÊxb¹ñM~ğq@ğì ‰‡¹$ä!½e­·Ô¡ßt®A¿#4^h7rıHÈé\?ÒQx­Ù|¬’PÒLËÌ–Ú´K`°”+PBBryOçK†LË¤§—ÕÍ@…æ\`š‘»G¹õöuÕ|ä‘^sBı˜ê_—rÙjm-%)‘Ù6Æ:¨?,Rù·Z®ÉR	¹Ô!ÑU:e	Ğ@ês8Cö<Ë¶ğ¾¿àX›Ï1{W‡,–’°IÈ•á¾FĞ…Ş­„$ú-uÈ0¾`!ŒÇíRI™í…á¥ï/%İ”™–’nJÈKÑ§Yû«%§‹©şÑk\@74…úp.%u–#}š9Ù$ˆ¨§ÙhbÄe÷öuüØxG H½'ˆør¼³«>Lê‡äe÷˜:¬ğÇ¥$ÿòI‡ğ±üŒ Áµ–éËRrE5¤0"'””è¤ƒ #l$ÕÉA–µp9ÕgñÁC=c‡ WäAôN±[äJz‚ècŞJ^&!‘‚úS’^E— Ær¹•¬P‘
+‚Œó}êßŸ™h å\êSŸè Ñ¤0í<DèXïıH‡Ìæ(IİJ,ó¤
+RèÙ„’ô¾¼•ìZB¦
+Rø|†Ii4¶u"ğ‰>Ş‹[Éó‘¸•<_B®o5f®ÈÄ­Iÿ9’.sY9ô¡ÓTGµ¤Aöuˆ¤2:0¾™ƒlRéË[)7È¯_éI<^ßJa¢H ølç‘àP€)¯6íG·RäP´‚ :2ÿ£CdŞP¯â=BÂ$à 62a@bÀ§c„,nõ‰úx+EE#tˆ T›A#¢cæ×[N¦Ã.\ p®7óÛ­  2g»»@t':¤Ogf8(`aÔ;F¡ËI|=í“åù%Äâ…×±PB¹!%éŠtÈ„ÍçlÎû@2tø¼Íí
+~ª‚LMLÜèëPN²Ğ¥„ ‰É@†Ô?½àÀÂ˜¼1å»Í£dZ Ë&MDJY/|¥whªCä×3xÕ¿„Y˜ 1×!¡N¯²ÔKÿ1ëÖHœÅ€%8©€&™Ö w(÷4~€àx‘³E©}8 ğ,	|‘G¡ÕØ\RŒI!Ëƒ»ƒ<|ãB•ƒ÷8ÓÊ³´~–6Ï§0­WŒ„ª/”4DpThìÁRÉÍÀãEiº8%pšO\hà%‚»ıBáSÏƒç.ôgà‹B!W‹ Ó³3ğõ"È”í|³2;/RÒ3À·‹ SÆ3ğ‹EiäxŸÀ£Â`,¤@h¢ÁË…”	ø«…”ğë…øğ›E)ıøÁƒBî#_åÁoAfÈÀÿ,¤$g€ß-H.Èƒß/¤ğf€?,¤g€RŒ3ÀR–3ÀŸRF3ÀŸRP3À_Af¸ÈÀ_\dËORJ2Àß\X¼ß	\(äÇ"Èì ùZ™1D›úÎ"ÈL"ıZ™]D£_WaÑHØU`XH4*F)…š£+)
+™ì*ÈL(»
+2«I¾¸’2ŠI¿®¤”b’.ª\™µE£ZWRø0©Ö•”@Lªudj]™•F£ZW’m›Të*Èì5Õº
+2£F´®‚ÌL“gW’Ç™´Á·ùÕ,ÂWÚ1ÏÃÓOyÚÉöì¨°…g…UÎ,–'”m9Âùï«ôG@Gä‰.ô0±²ÊÕ™>µwm9NkMÁI#Ÿı
+íÕÓróğkó;hÇ|òĞñ”±7Îçâ(®,ìÁ'®TRåÈ[•Šfâ–ù©qQÎ>Ü2¡™ÍÌ(cf­Ä ^ãèÓ%xş·Ráïâê«8B÷>ì&ÎT“ÏqÀ„ªxIËÒÌ&X8É<ÒvØ‚ÂèZĞvŒi‹Á†10~òa½03àÉÏÅŒ²™o-ğf¶­E`ß¦‹;lV^ğåG6²—¶|öáYxhaØ:qşé!¤Ûõÿ87 aSÇ"xÀp€eç4¥cMzé8\sZ*·­×dıìÅ>LËú)ró{Ë^¤¯Û17uSÛ¦fÙÔÔÒMM!İÔÕ MMÚŞÔDêM] Õ£Æì§…ÖØI0Mô¦½Û°ë»iî¦«Û8¢4¸SÄ‹Ğ^vhŠ`Ş^]pÌIş‰“ŒˆPÌZµ¨ºÌÇª=cçmşÓ’´m -SN{\QzÉúÇ;o^,6'l3o†›étsÆ6çğ/Ş„™ÑÇçö°?úÉáÏÛŞOa‹›7ù,ó5[9oŞÜÿ°5»V–£v	VÙväÁõ_lfI‡<·½Åúqe%‰~#‹fhL{S™¼ÆÖL¹f?¹¹hQÆä(¾b²”¼İÓa]s;oÑîKÉ3ø—Sî	«­ÔŒ‰YãZÛéÏ7]¨åYfJU™Dq÷XU1koñÛ¢™”Ò–?c6›—lSˆÔëX¥Îs©	ãC¼ÌŸEZf,(š¢1Ë4ı9›6wvv·N¦ı›.‹Æ¤\¾Y¦ãÈÈ™Y˜(¯“¼a	Sg‰jpŞèƒÉsö“DŠ‘<Çxd»»y+‹LÕ:\f1¡l½ŸÊ´QjíØ¹æıYÎêA	ÓŸİ¢¡C¤\æŒ^$|îóJ›ıD3F~’n¢ñBfÑÄ¡gÂ>®±w`¶«şÏyx5Î8dJ<Œo
+–•lÛÚ@ì÷)¹kÕñÆ#;˜®I066ô}—{4.ÒA¸„~6Û [ıÃÔ¯—®ü/t“6jÑ’aÒ¬ü›‚½V¯)oµÕÓ+£0[×<İ–h&ôõ$l Ô-LZnõ¾TÁ½^q¦'˜%“BßÏş5ÊOòŸ¾ßCY$÷)ÉÖ×²©5Áƒ´¬¹Õ¢‚„eWi¸tlğ%£kJyu â‡ ømŸW-M6æY°Ñ$©ã_òĞvHb"å–£"Ä@„ci–’¸|*¹]ø@òd¼e›Å£Ø·}îr9#DÁD¥ó$½Xí(ü ¶ØêJwTÇZĞ3eaŒ'fæx•<‡>‚ÀæfŠÅİ€^ M{¡İ…z¹q£óåÃÿÚ·½;PGœ‡õ9°ŒşB÷¿m53w»k…PŠÅêƒºÂ²‰EÑM´r;»È¬Ï(3‹WTHhØhøéµÌ4u,ÃÌÅ¹^Ñäßh~ê÷ìã1Àû¯”±äÁï r†%/K;6]ƒîKP(¿tìuÎ»sØç÷9ïIÄ¡=àİ"Æp~|†_ÆdÜ$İzyîÒ„jº_e"ºˆÆqáÍ¥‹P©
+ÆD’pï•ºşÆ‘n¬x¦§Ra9—3I®·ê®«ÏoYKú Ñ%@.¿Ú±Şğ’\F×7—@1
+0p<şy*®ÀqZ2Ûtt&×TêéO‰—Óùª#òp;İWX
+Mãá} ÒBèySåKfö÷Û Şšlô:ÀzäG1E‡ù„($zClE¯ãß lx#}}ßä°¡sÄoõ:Mdô¨oKqéè?»ü÷6(	ÁİÈOq‡×—9›/fHt+Øp´Æ^åÍö[ŸÉğGkK¹­Ÿ&táO;È-BëÍ«¯b`‡Ä%9§•~¼LG¬?ş_.€hÈ$y@‡ısµQ£tyëAfaPÈ0ïât1—Yæ*9´Z–À÷²ëaèxeÖiÑå/±ßxŞ—¿èçwL•ó¿HÎfçñŒÛVT©„ü¾ÊªÕ¶ª!±)E]µsñîé–Ùs~*/ş£œ?ÿJ}‰Ó/b
+Š%Š¥H˜¡r¦ÉÛ7£ÈS¦£ìª-»ÑE8]<Ñ@×¨ÁÚùyÀèàd)ñ?¶¦1‹–èÁ_Ä2àÇfÕ…ÜWx_9­,½­Óš-Âk;«n«hùK“[÷ay­Ë‘$aÔ5tœ–×ù›&Ñ§¦¢óÉ#Åé-)³œ&Së™ÕßÊ‡ì*I0 §<ñûLwLÖ¬Sq§òò&BÑpEj}*¤Ñ’²È¿úp]T˜$Ïr`]éy‘¯Ç0E1ÚÆŒ¥İÍXFdÁÙ°Ë†R¬U9ĞbRø¹³|“Œ	ÎæÒ+Y@XÒMï>çèÓ¤-Ë™Æ³I:ÑaDC§¦•¹6ÑûÆå(|Š‹?Šì&=ìR2ÄKå„'#Š,BŸµW…^fò†¨²>~-ã Â#úüëÙïp9dß¼_òx½¢U;È. Õù^v D¦·j=äÌxùüwöŸë^ÿk7ÿu<x#»é…k=hŠe >}ûåøCî«7Üüuwø†–y_ÍŒó+ ™ê°a(nñ(´Èp„)ğ$”ÎeØ„ËRYàe(¨¢ÙÜ<Hrg”oéÆuëa(C½e+R†”5æ÷±\­ç¿n<è—àßiU¹ ‹F80©\"# İßWk†CÂbd\ÊÓÒcÉn¥‚³ÂÿÖy€ú~wÙ6_í.–÷äñã'Ïu”ã3J	S0˜;.B/ù-¢IxÎdm«Eç‰ ë}<şòÕ‚±ŠåàÑq=ÓPã¥áï?$Á‘yı ƒ¡‡^vğB¦wd­vß§"&å«ÿı Ç©¼|I]>K%ãá8›Rñ*?%o$S—>ñEó™ŸÍ„z™÷²C·™R!ÚŞ½`–›ûuG‰w:¹[©Ğ÷rÒ‹q¤]õô~°zO­}Ÿªª½ïõö~‡Gè~ß÷Ecm^Gé.Œ{0²{ˆXÄÃfv†Äı%˜F«ùêÑÊÑÏ—}‘*›ºş1f×áuQb?íÃbÄS¼~Šï§5w[¬ïú‘¾m¶İ ºœÀLk>ƒ´eä¾h t´`&>ú¢ÎÈ1ÊyŒW
+¢Ğ´&?îœø[[fEØŞÑ›<¸ù«­)jO^®IÄ¾ößêÁn¾òàlÕ `…úñÖ÷wå5`ÓÒİBI eÅ‚°ÚÁ¬ ÆÁ:yDĞ½Ú' ?ç†}›ş>_fı6-”¼ƒ¹oÍÛŞ¡iÎ•ÜÄÌ…ÁÂ9‰>JÆA¹¹(Ô¸ı}åÚŒÍû>Í÷ëûœÏŠƒ1Î£,ò(lbM×¹Bw°k×WØ¬•v2ò«y×'H¥¿ˆ#Üî'±çöo‘é·$˜Kª"?‡	ù‡š’' HŠŠµ@ïüY$ú!BÜ®½Îürº4,jº‘=[ÇôŠK·ôbHº›—0eÃQ+¹	[ğ?ÆOs$™‰7ü1ªï'\GÇõ‰¿° ŸÀ,½Ç˜Wşâ²ÂdZG€•³?¸HÄ¤œæDÔÇ_Dua@Ç<„Òøp+ˆ´"Ï…¨q“‚O_ˆò ûÙÎ¿µŸ~õß³_ÿ¯şı÷Îkı?–»WşïÃöæ¿Óó‡1òáÙYí¶QÛ%h%“Ïø= ñu†¸øğfyKŒ´gÄ±fÆ¿†µÓ,æa¿]„8ü–›Ñ—]Ù±é1¿ıÃ-ïØ›FMß9[s†\ÚR©XtYY0h—¢KDÄE6Ù:øaÆzÌd·pA7š	"_¿cÛÔkS»†»ñ<ÊÌğ?Ç¯n&vàFU„µ˜¶Ş‡«_u<óÊ.# ò±s”Á¤Ò1æ å7M‰3ı1E·”áS"@Ï½nÛ~AB¸KÓBàsïblcÑ.‚j]:)…^NííÓU×/Õš^sÅBj7
+‡* ŞwZ«á¹áÓzïP»jº«†)ÎfáTRÀpê)ø¯˜KoÚ¡ıòúØÁ»Zğø?Cü0†eµBº/âÔëï–ˆ,aıúÆ¼A´ih£ş€Oı{+ÄP-Í„8%M`…/»4^ĞnàÍ¡§D³6>^x;XEu-[ë2‰È.&ƒî“êËã&fl,ØDÃHšpaöË$+DÚ –¥ãZº@ğ/A§È‹¼|Å|—ê²P…eİÜöú²+c¸BW1R9ß@Yyo+•p"ï	)†Êolåó™58+·aŞùM²“ù­´cŒÂĞnC¥²³³Ï ? Ø²Ï³W~™ó‡[‡÷—;©ØÒİ]L´"=ñõ"©s¨(ÃÂ![?7J¥¦n‰rïî=ÙÊÊÅÛ¡Ü,ş`V¿6Ù¹&«KjÖ–]*—}£0[{Ø¤éi1Oëãx[¯ 'ƒ–É[yÑüÎéIVjÈ„éïA²[ñìœ(Ö»Ótt nó´³‹=ÉzÊï_ «x00ıß|‰Wê1
+³ãâúX˜dc±µ´†‰.´ñZŸ)İçêª8LënÍÎ¾Ã v–ù´[¯:tZ>W:§ ÆÈ¸9ÆÂ'MÒ[«;ïâòà%k’·Y˜ÁÕŒÅ~3æˆhr=¸G²¼ßq¥×±iÁ‘<Uaœ¶ët†³Uoy ™ŒúesÔ¼Xo‘ÓV ƒ˜÷ğI„¯}‡¥"½!²ªœã0˜"ÎhmÎGlà@é¦\VdB-ç$ÊGzSPØİKfl+¼»Ûy./ŠÉ.”¼»)ìS(Q3RüKe	[jLSgSÎ™†â°?«÷¶Ò§qgW°N‚6â¤ê¨FëOˆÎ˜ò}µ>«­0q6RâV%~	ç{yih¸…/ÙPxëAä’pˆ—˜Ÿ–ô$»÷y’ÃM–é)îGk„ªÏbÈ 6Ğ]€Ê¨´GíHŞ>İâ /­%zd¨¬›gßv¤İ¯¸ûvÂ¤ĞyÕ¯¥ÜYbLä©'¬ş"Ôs`€§ ÓMmeäfªæZáh.LTÓŸÌÑSÒÉX¤,r)áp&R.s)#à[<eK‰†¡H™i)Ø:,/‘‰_æÒ&‘HIŸM"iÂ“ø}Ğˆt1‹‰Õ‰=£À7ğmGäqÖ]ı~€†¹òïİú^d£ ä7óQ<^µØ.+qüÆ­ı¶ÃwRßšöìƒnÎw1û% ë¢Mê ënomëîÎ a¸èŞü¸»;"<w)Pä&íŸÔä´¶şé!”ßW*”çCä]ÍêÃO;ãAWZb±}€tßdä¨±½3€Û ÚıÃ9±ˆ™°AM¹»êá|:ü'^â#ÎÅÓ(3xÌS‡W—«x‰›æ±(™ÇâZ4¹H#®áVšwwÿk·[¦×ÇAÇq0^¼Â÷»Fğ‰¤şÁ€1")›çuáø9E•Tm3D&Vm$õ81¨wpOjRj)t–Pp[ä„ãœ]¢Yıø‡Áàÿı397é“gÓeµL„öm+˜…šë°˜Áv,$_xvZ²†¶œPÎä´ëÍFØ|­¶°ı›zqViøG£ F‰ÛjbÄúbãd>Ù¾‚œ)%Äƒ®c6 2Š·ó3j¸œƒz5Àõ$«™¥‹iK¬Àƒ‰ÿğ¿g/jsé5ähRe@i¢µ+¡Q¦‘ü
+0É†?,‘YN†ƒ/AÚbYÂ-ºQ"˜±œÛˆs_Í„1øÔñ5â£Ö|%Åÿñgcò»œ«ü°Ã€á.JÔÆà Ä$È©è5(.HgjÌ	3Çbñã%ÈÈ›JEª'h=R‘ŞÄ&…B/Dh_…\6|^X‰	¨‚æsºÂçAıÁ(½ÀŸ5ö?˜VkM<âüõ*†&€¤éb¢¶î}àj›ıŸ-N>R Z…¸“¸%—ù÷ÉeŠrsk/ÌäfX.¸òB\Ÿğ'äWë¾ÖZÇÕˆVPÕ“0„(ºµ(i0‹-½6.
+ ÆnNXU'¨w"Ğ¶¿¹ÔñÔ“¢`*IóÃ5HM¦ú€‰XÿÎyÜÑ]?[5ÀUøEÜ KokpÑ‹ø|.!§1²/´Úm),„i´ÀqvòúÚŸÌƒVOyóš;zó‚zºË¯ÃÛk0âË.Ò›Y\
+É{0i›SÕÒ'Õ‹îîšKp›•lLj½iXAWg@‚ËLŸ™“ÖËD;ıÎv”fø¸“É$í@/0·ªÉä"kI#“äÌ¶5Ã#lÑÎº"â`¦€rÉoİ  ‹%ZñP´…¥íò¿8b×õb5Úü0R`Àíg€Ù¯:ß¸¦}"K&İrËıåÏRç¨bCS ğÜ!ãóJtĞ¶Xİ€Ñ„xæÛÓ|\ ´\±é¼ArıŸµˆVSqg[ŸÀ‹½`Ó%jzAµÊ-d õIÌ;‚"ø4eˆ¶ˆV²bøiğ“?+¥Ë5Ì£üUÌÔıR×í»ÁVf.Í©øhè`N®D
+ûªw×äkØâbµÚl~ÙuwP<Vë¤{Ÿ¿+¾…7´Ì¿ñÃéRòmSä4Ùñ–cÍU$âŒ(¿T*Ñ–ùnKƒÀs¬^3;rµ§½a/A­©csyqPş3=öşL§Î7%ïÇ¬ÖŸ]Õ¦q£~aÀ.¦@C`–p ëİ}ŒuzlÓÄákıf@MxŒ¯¹­_ì›à¶€¼h¡ØÄ¶ì…Ş·ÒÖ‰–\”4Ùl]®mîm[IÒ˜‘ä²á„…ö–é[œnşdëä_ıĞ)°s4T¼$7¦ÄùµWÀ8h§ÒN!n ìÀiœ@Gzº#ÈXKÚ|a²VQÑÉÂ/>$%¿²‹ÚİÆ^µªvz"ŒİŒêµš=­Ú•pôu`ÕÂ¶‚¥xÉxÈÏÉ†bÉeQpÛ$¢ãÚ!CëW˜•*atU±·!aõ5N¨°Ñr2#Ä¦•_Òº¼td–üKXÊ¡ÆÓh¦¿<ı¨§.à%‚ÀŠr(ã›yÆØa`[ÇÖ¤%­A#Rb7)}²6½Ö4Ü´ã›¤ï)º–™ÛŞu
+[Ôkíëy_Ï,ôÛN.´´ÖŒÁD¿mùL\˜Òm>ËZ’Lô=ŞO¤½MäÔ\‡†Z‰Úıw·!êXÙ-Ï“‚_6%P·wòÄy1Ø™Úo…™©5÷è&)ÀXŞDå=í%¤N¹âÓ}	'µ›±2ËÌX³Ì(,rBÂ"#üƒÜuûy¨x@ìÉÊûK;z7cQ²¼Ò ·—%x=àæ2o-œõÎİ!YL“swÙG{C™y™…	Ç§GóeİuªÃ³Ñ¹z­&²b[*_€ºöHho¾Ú¦†!a˜¤ÛqyÛ#½å´ñ"„?UñâÒ¯¨\Ín;y8|bŸKÕÁ]YâlßØ´ìÉ*»Á,?	LçIn.å¬\†“à"‘°Ç]?T·¿ƒ6ĞÔbN€üŞş
+]<V Õ4™r-_EèÃ€st9¡óíY„nÊ¤¼ô XHWüPÊQÇÁ+ i»fì*+µ¨•;æxfv:ZQâÍ’}Ãı-µVÎ&Úş;_RDs ñ1~÷¶óŸé¢'1´b0'Ó¸Û¿‘½}6Gs53{I®(E˜E¬Ö·¥|ÇWÛÿ…šm+pûó°uĞqÇ‹QKzí 3	'-«êúŒ~úxvŞ­=³Ü4{d“I+éh¾Q‹‰ár	€wKà??'Í!F h[wV5Èä¶3÷®u¢[<d­‚v€~±túÆËknqÓÎƒB1¾ı¿µrU¦ÇJá­4ÂgãÎr0f«[2a íì„Ş_¯)Îj¥Dt¶FÔg/).³óÕõÄ<´ˆîÁÅãH°Bä@øZ<©¥úZC Øâù¡q¸wöÈÖZ0N§#6ìßÆÑO½Ä¸+‚r…&‘Ü^ê‰©ÁN„ß(ş¢[’K7FñŞ”Îò £$E;+©	mZÂ«Ï¢EıˆÍc:‰­]¢¯OçMFMÊ5*¥Gde™#+ßß¥¤*ËŒªÜhT…ƒ3¿Íc#U‘ß P+£ªT>1;Ì.Íîù<İMĞ’…—Ğ÷zêş- ÷½³a¦p¢‹ ƒj¿ A+¹»ëeì‘ÑÄû(½ıq@âbi:5S“^èÜ˜7*cÉr‘Ô_Áşï}Ë}ëƒä.çûûÿÑÍ«€(L)iëW7#4·µÈB‘¸%ä—‰Õ ‚¸±…y0)äµy8K™ÊgäGÆ%©VvLC?
+b…=¼NÎ÷“ŒUó!ZÇúqBıºqC-;>É»Vûù29U‡$^HÑ/OÚ ş"½vçzé:³¤Öt³Œ5 Tñ’zÊÚ,œƒ¢à+ÜkB÷Wãê´ZİÈZIÒ^Ñ¡tÑ/ußË¤0ƒ:¡,9X39kÏ"”RVh	¤TˆMLIZ°ª(·F\ñ©kYî6º2ìxŒ¡§uóuÁÛ‹»?iRvæW†Ñsîxwâ…[h­¿»{´…vî9•=>–|e˜Ò³¾ 2#¯r…ÍoÑ´±’ŸÑí®:N#‡CævÕƒE·FÜî¶q¸C~ˆ@‹ıB¶Ÿgv™6“Ãá~¿ÊØtHZÌ½£¶–ßk<cK+Í()9Ò
+í¢ûh=»78­‰pˆ¨T"ŒğKXÛ§Ì0 @X?y„ÖŒœ…+\[jÙLÂŸCøwwG²Io6)ˆÎ¾¦5m>;ï÷åg
+=”Ÿƒ`}Âì.¶Èh€@z»g]å‡	Â¼Ï@ÀiAI®+Ä·çò³ ìx#z¿—ğ{	¿ûğ»ïjBMâúD¢ë¿øŠ!àYûq«á^ú=wŠ[ ä×(¾ÁÀ_C¾‹lX-9È›]˜KcXgãq:§CqğÁÔ×˜…
+ÏqPGpé<óÿG1ÆşÆcóÈÂØß1ŒıG«a½?ûI÷—D1]Æ½Ú2Ô
+P±]ûø€U7O.]˜¥ÓÜ©;v.ní÷ü®—øÈ­×zrEóMñDW¤$;è©€‹JSeüZ3c½l™«#X#²…òK[)–<».ŞSÇmÂkŠÍZ"‰…V^n*êAQ¢¤Õ+a$A¯ß†¦ÖV*H÷ºH+h»Îê¥ÌÜñ¸S~¡W¦”ìŞÃª—ì­?5™sëQ><ûºÓÍlYã±p596]M¸1†ŸàÒ&¹¦O"õùëiì×ĞóşÕ÷XGgd:"0á¿W;ü÷âcŞ
+)÷Ÿ¤1{Ûxw~5óHvÂEù¹ˆ•™P2_İà±AÍŒnãşĞ6¾xˆ‰ä¹zMÿƒïrãØİş"WPçJfcŞÇ<‡.’¢íâ£ğIŒ«bıE²n×Y~`Û›S¶7İ(õ^Šƒ! Ãwí77§^Áqz“ºŞ¦)ZOã‡¼äì,·ò!qç0wâ]®pGH…|¨ô ¤à¹ı±Ãr%R¶šñüº.$½¦Ÿéü—áLjt¾qMQ8ÖÉ¹©5ó+„c¡V•üĞ~-ùz 4US»ö¥ì9Îê›‘1«2‘S®Ïˆ¹9‰ªÆ­e‡í°.9QH#§ßtiu“8ˆuâLè¡aËo‰®„T,yw»½•ã&À yª–mOÔğ}LZm<êvµã´íWdô
+÷%= f~¬>çæh\!n[YhôOö(¦gj”'‡Ó@„@`’xPŸ—AÊ„¢Pªto[§<B†Õ²óú¸¡ØĞœÇÑKjĞåÉ×ÈSÜ%Ô›€vP|ÁîÇr¢®Ï‹.+:C=Û/Y•èá€"ÁŞIyıŞØ…p»^—ìã5_ÉAïæ¼Æ$ûvX%#fC1á<ªSÎ—0­Q5@ƒ`5$©„‹òÙZ'!…áè<Û£#M›@‚=…¸Fñâ6"Qk¬àâiÔÃ{ìáo4ëµi+!ı!qp¾¹Ç¢u(ñcŠQC¥3iu~"b­ÊÌ;L‚øwõgX÷­ı©ãw4îÈ´^ÉÌgÖ!¯~*€štĞ¸:XÍüO&«»(ñ`S¥‰…}‘K½O8v¦â _ßæÌ–Û9Š·³er;®é’…æò­“?U.ª<Éü¥ôj(Ú”” *Z\ğNæb‘ìÈ|ÙÍµÀmø¿§Ôèé+¾Ö‰á'•—¹é¸“+ÕÎÏ®«¹Y®É˜âÅq2ˆùç °éiNˆÄ³a¸­Û6š¦4VIÀÛ +´Øs×¡¨eÉNBc!*•#uœ(*lêş©¾^›eh2‰—táO1ÁYh®hËµtÇgòğ8ç¾ÑÌMecOV¢$²?@Íæ=MRˆY«¹[Z.“%Kaoìş5‚•âP÷t”JM7R†!R\¹A9€í™â©ô´U€.¨Zää\á©æêÕOMIÓóÄüê€ÜG]æé—ƒsŒ8£/o« éä·ühr:HÙ>2«?–„æ»5ñ£áÒŸ`·p˜ßmèÀ™M¬k3}òª¬“VÓj€)Û·l{¹EL4mİ†pË£ïjÓŒ†k0Ï­‘œ*#e	†èÇ™Ê¨94ıÒN¶) ƒ¤,mÆ¥/áTˆ
+‚xÈéHméØ#"oŸ‰lJ"i©’ÈÄûa=)|¢E} ¾[©îKô}ì®_èçäßp€İx:†z,j„k³}S<(.¤_Üs…oª2cJ]À÷Ë†½İlíp1œ„té
+T–ÕÑ¼Ñ\<[œ&9…@öñ=ó­Š2G*Oxà¾<ü¦®>ş™5Ùøyg>Ô]NÖ”¾ä~¦1‰`‹ôÕ¢âr¿ù¢Ì±)×4j€káLèzÖ§ÜJÓ˜a6_lM”¾‚ˆE_-§¦—˜&ãéh„²“Ú\cyüÃT.€zöš
+«UÙvı ª¬»üCÒdäNn„H•Eçg•+:çî¯ƒ¼ûã–ãéyIÃ¹Œä—ôEFÕ/˜ï³ÁTwÍ<ƒÔ0Óûí7]n:­C½ÛY¥ş¾êË—ë®2$å`Ë?¹àWhs©Ø{6AœzwÊFòºf´U}î¸¯‡÷Y“ßë½×¹x+ÍkŒò½ôœ¸n|5è3ôüš7MîPAsd"Ş RùG«Š`—Ú‘/pñét8·Ğ‘ßG(Ó(¨Ë+¥E¯A3…/Ä­ä{fÍÓEØ¥W¬Ñó¹ËêGx$—1¦¸ù”o1¡\ß®0Û›!úíÿ>` áä-êòoC×¦³8ä	}B›”ˆ'Õ\+.¦"eµaŒçÑÚÉ ø–2ób÷·²ÿ8ã’Á ?İ®’b8ìÃHü@E%{PïâîÜ•)§zÊ×t¢—ÿ®Äy€Š‘;y¼Ëy|±*Şhß
+»ƒø	
+0”-jÀÑ,(ûKÇ}{€FÖ/9Í3”¡?ºû¹“}ï…òìwB¾µ“ÆÃáGEÙjXòeÂÂ‚_OeòÍfxó¿O>©“I\›CLéö§³9]V^š)Â<Óôz†&¬dFÑ…Éõº‹´š“ËÓ´›ÏÎÅ—Áùº¢µmWt!£Wí#ª.\÷u&dÛ‹$12‚êŸmëåÑ7ËUN.dÍL×%ã7jÿ±˜ïe­é2—½Ûx—ÿ%üŸP$pdÅƒ´ÆŠøÂ%g„çÈğÊcƒQÖcV¾_.ù€~öÁÊ›ŒT_8Oc*ßÇ0XmkJ1Ù‡ó©%-.†ÿ¸&Œ–ŒHá½Bn´6CÔ¿’ëlm¦kÃ¾<YA»„ÂñÚE´—÷êdÉIPânâe>¢1'¹ûn,(­WTpoÃ]³¼b¢”|ÆĞ¥@¹Êî+gƒ·Ôq×v$7ß½8ßc¾ëëa(/<¨Uî7.Íye]ïÏp¾$B-EÙD'$$±½ˆª3VØ¼šÑ6Ğçƒ,Ò„¥9C]á"éë!
+*_xAÚÎPû0œô]#;ß}i&}Ğ’R3é½ñÕgŒÀ?§’IbğÖs½;˜ŠÈ<¿£•úwŸ¦Âš.µ‹ig°@â
+¥õ(;Ëär+‹>%œÇqwñcb¤İQ;5ÒªQËĞ}¦úäŒ} šXîû?.7ı³r#^n0e9Ó©6²jÛàbH7"ˆb{) i«_„ñĞñ’‚åÊå´ŒcªÊcŠ¥·%GY9ó¯9~‘yPi‡ÚûÊà]ú‘WrÃrÇy˜~œ‡œQ.Ş9¬ôT&ñ­€ú»~^£üöÉv¤n¬íàğáÒæ¥†î¤–(«¿>q‘FU³¯" ò=?±Îw1ñTQ•b³+^ô\æÈ|ìĞ¹»y]©2÷Ä7g]ô»mvèw«ÍZHÎ¨{ñİİúˆGÙãcù(½%‚zòN†Ál%€B×Ì:U«¾i™‰ˆ=#SWI9ëñî¤ÚS[9ŒŸåôın¥£›hˆ8œ“kPipúãaŸĞ'À¨u•Jœ;5É!qE¾||ñAk^çZ›¶UÅOª–ƒf(˜®'x®P•s	I÷q@Ï"yŞú•a^³€iv(7¬`0İò‰zDãî"‰VåxÒwiöæ|Uò%‰?çTV‚™!Ã4Oßâ7ºÁ÷»½ã8IÛ&ìÏS;— yZ?ú‚µK?!ŠS,h#ÜòƒZwÔOp³©İ/+¹U^ß
+­#ı·=È‰ÇÄPHß‡A]|ıy i@m)Öá~Ç[°È4Ïp!İÕ³WåËwLz‘r¥ÕŒUÊsô:A·RUÎÓ‰¨QKU5Æı‹Şü9oI^´Úğ[í«šùU­ùŒWí™”°8sAè¤JŞÕ)Àõ„Èn~´îTĞEâÅ=Û ÇR™øÒÉ1ô—=ñKÇñÏOkŒ\ˆ" TIà€LyÂc: …{ÒI*‘0%f²Z*,¢¨áÑHÚšD[èè•ô@¹šÂ#—eå‰ãÍí|cÛ¥Ù™Ú“÷;æ3(9¹¬ıábŠÇ#Q¼Õ†ÿk'8ê“8–Ï89|õŸ–P=EtØ+›°"SÁ”}õ»ƒê÷WSı~còC‡ç‰:›¯\{›5	:ù¦…1ã_›†Ÿ
+ğA—‚y–E"áóÎ„†O‰XÊü^P©ˆƒg¾ŒÚ[ÍÕ|š¶¤sÇ)Û—§¦½©UdÚ!³`|“Z—r>r)G½öoOò…Y–fNêÙ1ŞåÂYÈm¸ä•ñùÈ¥“¤Åı¥¼ µ­0eê²s÷LE2„‚vò2Pk‡ŞŒè×EÏR3ßni¾|¶æÏ ¤~X¨íO112l?Í¾_|Ì%7ŸºOüIs!ãÓÆ´|\^àîîn!«‚\Ş’¬OŸŞ3˜ŞÌj¥nk†›OlbÚİzè¾ÈãÅğÅºåÃÍ"âÂd¾•1:¶² Yˆ rM”æ*ÍÕ“Ëßzœá`YYÅÏÉÎ.­´¥|fL÷®ÛT•Ã„Gõi;Û÷¤=‘i÷O(ä|\š³˜ñ‘Yäş)ıæt;ËUÀlDŸg¥¥è3ÿ™ÏüÚáÚyæîhEÌ“5‹Æ®,_aMïÙ^¬+nçQi>™M¥‡gÚîùÃ,ó¢¸ÀazJ»P:=*'°¥BI»ÖÇí?ÈÖ|’Ú5csc›Œ¬À§F¾W+bÍæ3ûñº,f+ïG	áÓ2–QĞgå¸QRP9²óíü¾£˜íOú	ÍkşQiÏ–—vòí~ÙşêGe{Ä]ñ0‡lnRA¢”ÿB–øyRrùÓ—wÀÕóà#÷A´,ïKÎ9P\~²ŞÇ/áÎ}'Ü¹oæŸ˜"Úíw4ÿ;ËWÙşVŞC‰^t÷–‚³^Á=,ï¯'EQ©?Sğ%kÓâ2 MÕGJw†ª2';IU?yéè×ıÎ_ÊØ‘%¯>P Ş¥×òb:O]ıcOÓN*ÉöaàQ:G¬eP¾îÒŸš{Qÿ±' bl~R[4–Ç9¤¯è+Ø2öÊÑi0À«7Š|¥~q*_æˆ',vÊª!”0uüÄ]ã §šD¢³éô¦ÕÕ6'úö@÷6p7™¸·ßRşrš}ÑØU¯á®zæê÷–Ù	£÷å¾{º.%M’nÆãóœ¹¡sqôNó~LÜE•QŒPn–'|&ú‰(–qÑãœ_œs&sHò˜r< ó Ş6 ÏDW*gxE%Êå¡ÊïüÑV–é7‚§…4(Ì~êÈwv‡*†vD|§ëüü^®O»ü Põk.Ì™e­
+ŞH¢ûÒqÑp×C',“Ûx`	Ñ!Ğş™æ»¢UÙíP:»ÓŠ¶fÆl%‘fª—N2auğ§\T+å5·æt¯:8ş.'oä¼•çÂ‚¬P«2;I¾Æ·Q¢9zûsÿÆr'ÅDí¿sÆq²ÎQñünÍ ŸùuŠ«TÒÈÄp—‘—h>Ñä©»¹‘ÓcÎ3È@™ÌgÜº”Ï `I``…
+|æå¼òp˜6ÖzTšÎºù8kzUÆÒÎQ¢¨¢cZ[®¦–Zeª	ÕQOunìå Šè	" Z‘[…¤#óÊÌ;eæF“N}4J—›nq£èQ¡Œ6Cß9Ñå {–&êøöÀ¤c#÷j-º4ü¡K£t{Käiè@}”ù7fœUùâ JUy}ñ
+ğQ5£Fò ])ÊŸŸ³ü"ãO‰Ì¦«¾¶qì™<ˆ•à5H¦¯ªyúA15Ùz,7Mğ­J¯F*0OÕ¥s"òvÃM±É›œêaµ®”x‚zêâõZ*X'ò0ÅŞæy‡íT ÆkOî3Ÿ³ñÉ_™÷ü›ª°	këí®Û†İõ[Áîz¢Ù]OşŞîúÛ]¿uÊÏ©ÿ•ÅÕ(Ä4¾~û­ñuÃø:§2©ş³ìæén½ÿnUfá4L»fO·Ønõ2cTöA¤—}ÀhÆwt’O{×]Æ†™UË³â»©´!Û#ô)7§lsRøÅâä¼Y£«­"ãiªç3Œ3›M |,1¨ öÊş(+™JK-±Ğ®)ÔÌ¹¡~dî¿kmğgYŸm(Ëªëx÷¯šñèÜ¥ƒQÚæÒ.mrI‹G÷µø{X‰…cÀ%ïVâ‚ˆe%é±¸â°,“²*RãÒ‚=q7šf»÷Oåã¼¨tñ±×·¥ıš2u–¥µ6ş  W®eoF÷àÀî=¹™ŸÜWô}öà’ü%ÙŸäqA_Ç÷Ù3…‚@£q'Åë÷Ä<ö>àDRV+é¤ÚòG!8şƒ	ÅyR†ûÀ4›¨R•ìú­t?-ã‘zD©?Œ¹§GÓÂŠQ>!á°Ğ³ÑÄ'®—İ7³ñâzCŸÿ.x´éĞ<Rñ—_fvàÀß;†Oóûíp2 “Š³%ü†¹¦aî]‚B]Ö.ó0îàŒqÅ¾Š³â3`ë–äuë,Ã\dàãW’!ìã>Ìi¬Ã"ôC§Ë«¶7üæ½¿=_şöT­aê	ÿà(£ŠòèJ‰cúüñYÛÃ{O×j±/”pïÑ¨Œˆ‹ğ²³2"¶ä–qpSt/¡àh²Å‘Óã0Şsø6gËÅ¶YIÑkÒj£gIáœjN¹4„kaAJ²¸B†Slbœ!Ê7çj@9BUŸ•OJ1C9ö;h^†› Do‚‘|e´gÕËÜ˜lŒÿ_È-?’[ŠE£†±hå!åm‹<XF>Ş‹´ixâ$­¾%œ±é)Î²{ï±Ù€—•e«ülw‰RnËÍiaš“¸Z‚Õê€S®¹‘Ö2†çÉY(g‘úíiÏl„¾+%+Z3Õî›ÖLèŞ#$aÔ/úS,ŒÜ™¿uè”?¸çmHÄ),Ñc}7­e[UšvŞ8QB
+øJÙÌ‹~§=¾Çb¹µ…İ_9åÆLLÉì” ÿÆø™ÙãßeÇ¨Œ™™dt.ax¥(ƒì^Gæ2Ûß½&Òÿ‹¸×Ù‰eíûÖ}eQ¼[~ÓEŠ5ä5Ç°ï™æÓÌ¾÷ğ¿vá"/7à×:ãõL†·HïĞ‘á_0ğŠÁ(öŠˆÁ#¸F”3¶?ü¯,US0y¼$¦£‰¿P+@Ãªkáœ×¦áF?7Ûsè8pô$ß°Ş9d ïiliÁJe{KÙÓpK‹fc/Ë$|€¹s½e3Ñ"†÷PàİiMÇ¥ıM¨XŞË°¥İQ”ì¨¿y £…6ŠÑá¦‹z¸+ÌobÄ=xĞÏîúğ„49÷0*‡xıÇòCJú{¦Ò%N[q»DzB2òrD×Gµ~¬3º–ÙşMé–ºUíbD™lĞ¨¸¡Ò½»ëİİ	6ğnÙfåöÄ†”¹²¸íÚÔ%fÌ‹v”¨I¥’±R³PÒÅë˜œ-£ÔâòJë²nÎ,Æ30œı¬i4çf_YVIfµüi7o0ã«ë÷›‰ºs¬bqĞJi™¯Êm»¨¸£w¦¦•¹s/k#9Ã|ÿÀÓ6>mËk0¸ ô`"bÂë¦jÚ@À ²âªÑl?â3/ö¦ËË´kGpO		øæGºGßMX¿ŸÑøë-cƒ†œ"Ìkšú=fàUÃÃMíÚvojëèúBAN}&n]”<Y”m:2Œ†v%o¦–Şg8ÿ!ç?şç†s\k3ÇÀ£h9ÿ[ÃùiÁpşC3œÿ†ó#y™1ú|Êç§÷˜JÄL’­D¸[œCª+MŞe¼…('”ùÑ’/æÅŒ·|Zjÿ8]cÂgº²Ur…~ó™$GüèLÃqÿĞÍ’>šÚ,sr75Ä%£éÿáÃÆéŸm@¯{õ×‰Í¯A³n5®øÈö¶~b¨‡PÔvbYİ«›Òy <ÕE_”mlåR´=®Íç=)ó¿îf%ôê×Www”ëİrÅÏ]ÑNr[âÜdCsb;‹mvŸ™´(?öêŸ¸ D—ÈŞ¿ÑS™ùĞÜƒ(˜œ×ù…£A£Ó£%Ñµ¼)z£hÙïşù–EiÖRÔîßlB0I>‹û	=¾Ÿğ‡Å=Z—uÍN‚ª¸¤ŞÑÚzK2Ÿ2ÃÀ~u?êÜkû¿¿èFE¾8TË®·Ù«¶Õ°qO}ØÏÈ0_¯wï§\åÛ÷n1hCõö7]ò}Û’Ô£²ÿê7{úÄï÷Öç.Ù[¸§èRãÿúüköÊWÛš‘9U»
+Ù¹°Nş%f_íP¬ãNåÑ²QvçŒôZØü)®´ˆ Q¾³v_;ã‰š^öjg¯Ì¸_ÓT'¹`ˆ4~íº3dí9pÜÈ[tdƒ¥g`®Õå&-M¼¡‹:İT 2
+ÈeRÖ…¡_øl°.âÙ UUX	ÍÃ)ºGËE(}š5õ¥<åæ3jçKOüuJ»Ø]ìüIËO¹hËìÒm¥´Yvİ˜¨}ï8Fl©2ŞÂµ{À÷fŠ«â;»'†8†ûù˜Òùa÷‚‰
+7Ïğ>ŞK”}.¾Ûğ bÜ%zT9Ş³­‹4½Æõ˜ŸÁœÕ¡)’ğ™¿°Ü“4¬e}~<ú?íG±üæköÌÉ~“9UìÍüúü€²ô¦/ÃêLwåÓÕoGUºPr&ôM_ô[~l(¾¬Ş9¡[I ‹ZøÎ÷X|l«Ï0½c‹øï Lo—äøfähòR6y¾êyT»B½égÑİ±]
+œ¥?ÙÚW¼h
+™¼~Ö\Ùï±q4Œ	óRı–m–;İ­T^u*¼_m¶×÷«£T,Põìêk,óJ¿´ÍÚ¾ö®—Ú¥{ŠÇU*­ô{Ò›ÍµØ™ 1ÍdÏ…¸G÷ípóOè¨«)7e hº]ºÒÌVwä7\(Úãp“yì¤Ãø1*â:‹Æj]ôÃ1Ï6ŞqÉ²á•Êoî5ª~ÊÍøtw‡v&hÙ<;']aêKÕg½~wşO¼„ÙOª~ó	šO‡Ú ØS„±¡–ëBFñœ)Ğn“jí‚$€­Yá±ù~'LÇóşx¯xËvÎñvk%qcwÎöÒğ/ ]ÒŸ=>Gõ|¸„Î=9+|àOÏÛÒ2ôÔiõÃ›×·|[3%n\X…Wu
+ßó¾à“èhDÍ§Ú!@x}f¼î6#‚ˆÉ‹	é±%MÙÄÍ›x·y€WJGtIÎA—’À¼7üîîÑãõ™ñ¶³³§·é­	Ù¦€à%Øh³
+³[L=%ùª±jÅùºï7.òa»F…É¸q|G´¡[~éíàúû6¿Ì]½?¢ı‚NP²_-¢’my éŠ¸
+‰/*Ó’NÖOÌKÆ9D¿°{#,
+.…2ÍuÒ‘øg±Ò3]à°õ|Î›ªôK:ØÌ~Û³¿\PXmÓM2ØP‹jİêßÆ‚½~Ô,BÈì:îg?è"›±AÃãl¶ğœ0âh˜{(@~z\j®ï0Š‚
+sâ3ó…ñp5»ğG ñ¸ÆŸ%Úa_ƒ®½íŠï\™ÙİÖ¯¾‚Æè±©Ş!ÆõI0Ë“M y¿Ñ›ÕoxQøxƒWõbá˜²ÔS–¤óy:Ò?b7â#z¡C	øÍ<8ŞuV%åŒ9(Ã¡}š§µxòQ~1‘ÓpÏvÜGî÷é9N5¤»·P-üjAåGQÉ
+ÛÅ—ê?5PÑÁO*9ø©übú›RÜ?îÉ¼ÏüÕôÿ8ùÈH3z‰wü¹1ÿ	â…öÙYÓµØ¨6¯õµ®<;ƒw¯on³şmøw;Â¿»uÊ!d9ÇC£ğØıœ7wÆ?IÛPŞ4WŞ”Êk<Ù~Š=Â¿;»ô·Iğggô¼+j˜BÛFSJÙq­`lVŒy»,Ä¿AŒŸmÓ3ÿóB!ã9¨²Z¡”G®uÛã…NúãeLåèàıd»Eï>íîğ‚x
+4pWÆ¿úyÛû	ÒİŒ2=q­xh64ò†îì>Æ¿A ı}J#ú»Kq<vXÈk„O¡:£í‚¤§®u±0ë¹XğzØ.–ÊÂ&=ãà° Aqˆ{D©,fƒ¾:‡Õ¡Õ€¨á™kõúf½¾ršÇİ.ş¥yÜ}ÑóznğÖCös÷±^4B eŠsEÇ¼èÇ1Îİã ù8jÒsƒàÏ4ø.A˜¨£²n7Œz°4ùÒ¿¦|Í†kÔ
+zı)Ók0>ác˜¢'O·aĞ±]?å?ÓËğª›°’Z&-Cšía³Ã0ÊY“› Z‹)áhÙ„Õ4ÊáĞHàP´sílÓs—9dÿ6¶yÙ#Ä›§zÙ#6MXH#}¥n`áb©îRá»;úKÏÛ}BG¸<wbùòlÂRçftËR9‚<¥g–•MPeqAóño>v­4G\RÑâ ‰İ¶O‚şâ '¼Ô[Ü4šœŠ&ÃJí2³Ø.4ëQ3£\œZÑø>	Åºì"J4UÓ(s’+v"ŠeÔ{ö”c“&Û¦g9*ÜÀç	/ü´y’ÃŒ	bÆÇt8Khm¡uRÿPL;,æé"7íSA/Ñ$?z´C›ÙßFŸÑßÿ—»7ÿkYGç¯0:ss¬ƒpl³Û£Ë7™ìa’	—×Zl/²%Ù@€÷·¿ªêEİ’$3÷½Ïç¹7È½/Õµuu•ÀĞ	¢‹¶1ó„ãXe+-Ì<ea4Ûù7G­-úŞ ØØÌap3àİ¥´IùZÀ·ÒX¤‡4šÁBa2¢]"4¥I9\´áL§¼—
+¼øtÊ:}Djxr¸ˆñZ§åA_VVXL¬G(Ùc8sÏ#ø%<çù¢ÙŒV¡¥7›‰U€óœ^&Oêo"Nöé°ù´~k‡
+áÉkk‘ñ£ûle…µÈ"Á'ìÀÖµ6šA™OÈh8ÌÄ*ÀY6mn2
+‚9èÑ1»5§SlÁ¹Ø­íœ†_Î½h½µ·»] ã›á,Ä×Ú4Éø†<bXÑ â€ì±üÎÌ±BâñWN*|$Ho 9Ğ¨Ü¥ïƒyÎd¼ÙB³&×![îµÛœüTr ÔK5Â{iY‹Â¦-pÓ#Ø¤ĞëMúµ/ôéïd¸cmÀ|Ç6 ¼€yÀ6[üdmÑ¿ıÛÌOŸPÄéãé=Á—İ6( `Ù6 L¼~¡Ó¾ètƒc(¦uºQêºâÈCgxG¤w×çİÍ‡¨JäØÖğ	ÿ7Ğº lmSJ;_½<@YFÌš‡Áx“p0 $AaÁ\ğçá<Kı¯àÚmlay€Õ0-pœ)”‘NqşÍ^+	n2ÅJ›XiÏY±z…ƒØÃƒø2a¬î°(ÄOßÆ6ÒŸ&h˜µ"´”<ÊØ(b“˜WˆĞ?ïŞ'm2Ö	Ö»0“›¢	2,›M¬ˆrZè~|"2—dóşœÆÇDMıíbå]ª\QÿÃñòú'ëoN¨Ï&ı‹(D´Ò.œÓ­fØPHo0@‚cs=ïE![a¸ÜæNûN±™âY‘Í …¡FfP=Ì¢© :3(N¸l1ÎñÕ”2ÙĞ”ÉV8ƒ³Éñ+áÚ€şİ«QÒV‘ÿ!¦EÊiAí¯‚H';¦µñÃŸ¼öZMØ‡Áõúàº0Áµ¨Á­]’v±»­í-ú×§)—ø,ù½•—áµø÷à¡amƒës€LŒeSŒ%{ÄXD$Ãì¬²Ó{ôˆvîÑe¨Fè1œ›£	‘™{1O‡,bQ8×çÕ·šÛ¡ÿwºêQàòVsGÈîÃ’İkõ£wŸ?}8¶51>oäºIê'ÑT.Ê®èúX±lòÃıQ>NzÏ§I\ÛóInÙ#Q—x³½½­e#šb)´4öÒÂ¬-{q
+lgÖ)Io"be“Ğ˜W€~J‚&¦«y	K£Q%±‰U³ÓìÜKÄö£ÈJ¤uøÖš/;åÒÓhn>½¾˜^;Ãì2L²ëÿµaĞ®n*Ú$YKPoA¥ÛzYŞ…]=r}oQˆö™¹†>òò>:HÛ"D9Ÿé­øRk°‰±Ş›	œ±Ş@ªĞÚğè_&Ğ$æê-û»Cz¼)DïØÒĞ5ÛË±¼ÎWû>ÇõÍš†àaİÚÍ¦O)auºho“·¡×r\¯WàMïş¥äè>V}^COÒ€öF[›Z8ùÿvj¤Ø’ôÍzÅ
+$b)AÅÌB¡ßAFqûi÷É‚e
+7˜[.v¼…z¿€Xü”¯J«àôZÛ­,šˆ#èÆ—f'o…à÷{ª}üúâÓñIu{ç¢:opP8Œ q`]ñL¬¨y( aN“ÂÄ áAL-ß|a(ir$˜ˆ©£â€xÒácxRU"4)¨ ½¨‰¼”jT¨@‰j–ú/®ójñt¡Uã4§MÔfÓû« +kµáJÖ–¤9¤SÍ/\03¡–!,ĞZ<:Ö‹I¥Bxº%¡U	aÇ	‘¹ñˆjÃ0”bDfTôuHzÃL®NñfAè
+‚-ú7€.´Ö„Š¸…ª‚^¡¥.r:Çâ„ôŒÅèÉš¨Ù+/’mzKd›¼qÆPPï@¤ òŠÂ¾ ³}<ú<à'`Èõ<­&j—áh5é›şvè{ƒ¾ı»‹P!Ë†>¥mæ5P?ÿîx@>dç&ù`öòÁÀÀ™ı7ÆÓÊË-mT}oˆ²ôÇÓŠúÅxJÀ	íJÅğnë2‰²Pì*4‚ÇºD"Ö†¨Û÷1ÃŠûïçîcr`•:õ¶¸ŒşôeL‰ÛíÜ{^àv‘îS—:·«¡£î~yô‹ş%æ—ó+JóËó[ ††Pi4eëıyRX‘(¤PFØjg„‘g‘ÒÚ¦ïòÚL™ÙuRZ-½ÿ*@ä‡ÆA9´<„­akFØš¶f„­™ÂÖ#Õ—i[Üƒÿ¹{°œ_À†ğC^¡b©ˆš}¡WÚ“I¤Ê¨ØóV³…oè©\è1ë_³¤6¹G‹Zr%4˜ŸChğWT`	"Á âÁ·şéPÌ>2øß[Jc5,h¬¢²Æ*¯,ÀhS^ïèz¯´VCƒŞ‹’+j¼†Ë$×GõG=ÊaZ)Rü“äêÓámøÁ²qi°‰š°á°0w©İÓ„!oÑ·¼ †‡¢IÀ
+Ã±Ö$^Bs°Ã®í &¤µĞ7şe”ŞÒÒwñ_Ÿ³Ú»èù3Ñ­ÁJÇ¢[@Ã¸0“˜z¶¶ %²`ÖÓ‡3%š‰fbÑÖáõºÈÉğZ*OhU3HıïF²±#Z7ô:ÃëslQt±ƒAÍÖG|¤Í¯š!i+BÆ´ï-í[ô12f0’3€Ã9Zš_@ó s‹HğûóÚ‚bÁ”c¶ŞĞB4ÇrT8T#<T£(Ìæ‹[ÚÙ¨ÙÈ“íçk$®Z[p:Ç K £ë\	dà¸€_æ«´ıcÇ·Zâj}øWë¥s=6¸ñ¨p®·ä=~Õ¹ş^)a( •HĞ¦’uÂÒâ›°w@7ª¾lŒÚßBc€Â>qß²‘¸°Ãßz}958Êã-#-y‹{ßlÅ‰¬n	Î·ãÆÃ™O*Óx"“_Üe¡â)ÑŒ6h‡ikï‡§Õ9]'“¸' g×.Âï‘KSC€š¢8““Â™œà™œ`BP4› )­­]a·0ü!»…”ÅÆÀâ¤e{¢›*({T”ƒğå¦òˆş{ÄÕxÄÕˆ²Š«)Hƒ©í&á“Éz³Ù.Ë¡+Ö³^ù¬ö†eÑDÜ ôÜ uÏ›Âğ0rE€T	ì*g_'p…8üSƒ˜
+^`»-,>†?kñ‘ŠBi±½!2†ƒŒ©2È }4>·7ó«*SÇ;ÍÊ:ŞpÄS®ÃÏ¯¬t¯‡m8YI<6…h2?lÕèˆî"q†0Sk‹~RKÛØR±!‹š§aµ'ÔÒ†lÆlE4²“7"%Ğ•eÕ>Áf¯]ûDc–\W7g“JOµR­íİ¼£ğ*Ã¸¿÷Yõô9ôãIğp_©Q®µ½'ìiôµy¤9¸2©iIÚMË†®’æEÛZsâZYŒÖ`œ…NµërlšDøÿæğ¯ußÜÑÒ+Œ¤ŒÀ§ŠK¿ÓfFUøîoØıˆ.×Ø050CjèãvZd¤T¦si"w£¥-ÜıæJqÒèÜN›º •(wñ9™*<TjëˆF6„ÑÓ°Êè‰¸‹€Hë”x¤c¿Ç&ªöùÍçVkC°Õ©Á
+³¨Ö Á´À¦È¦£xâÛ^P»`ß¯‡Rƒ·T¸µ³•·¤ÁıÒÆjë\¯ıM¯Ğ¨¡HÛAf¢¸…#Õğ_Ä:j	”â=5Ğ~*·âü{¤AîU<Ïa2©ıñİk9Z+ô“š‘VÃ‚ÕGXmõ‘ë¬ÒóP¶{y Ey ]hrujˆ ©v¹NÎ,WË¥Ó„ùƒ¨Ö>ûƒË0ú^­§;
+¼ÖnKXÈA{ÛÛ{¬‰\­~üìíÑ›=…+2ã@fşoööD7í¼›0Ä+±e¥^L¶lwCtS…¦Õå0úElİPy$Ô{{½¼	õêKãÊÑQÔçZÖÇ/ô·/Ö¿~::~ñÉèÚŞÎÛÈ!Ï,íñ§gï>›lí¢ùa?Ê2Ã.K§AòzX‚!¹dr_¶„Áäğ'&Ë@` s`[tV	ï•J‘~‡(“O”IÔ Êäéğ‰2ùŠ2•F§Q¦]ÀCYáôf¡k !¤±„í½ü›(zHã
+ÛÂÔ*é¤mæÍOY–±‹G¼“Zıƒ¬nëR'y'êW~¦ıã£Ïë»íf£½µ±[ì¢µx6KJ7(ÒÖcÂ³~BT%Ü	 ¼õJ›%ç=Kk†Q3|öòtµKÚş¸¤maïµy^0ì˜÷¥i-¿¾ævY$*qƒ-_“wv©L°%aÿ0–{-a)iêw•±dk+ç]Ê&“âßæ½¼%·“|ˆõÔz>”:ãc[ØÜÆ8oQÜ=ím ¹®à®æß¡Å÷h?ĞÚÕÉµI­5ko“Z*³‚ÔÎ­É9eÎë†X?`Å"øé€¯¤½dT8ìmÆ¦ú£‡Çå
+><ÎÃŠ­ÜËS6}më›÷é“İ¶0h>Â ¹v|øå]möU…Áv.¢óÌ_È-ÙÉÖf|OÛá(¼âƒ.7«òZ{»y»‹h–<Ğê—£Ÿ–4Jµ9BÕÛœD5ùîHo‘¨&ø^`×ÄŞö¶„zt…ĞÛÁ=ê°õš”B{ß‚3¶+ø.Æ×Ì-‚Eœ°aÉø öœ§s®t¢°xKZCUQÉefQxÑ¼A·ÕŒşE)¾Ûôğ\^ˆQÕëmR!e}T²ª2¸%Ôß^ô“×âê¼µ‡ÿnĞ]v‹.Â7XŞæé»ÚwÈ¿…ŞÒ¸sj°%V0zĞvcÓ°ÔxÙ/Ÿ¶e|Üæ¬·ÌgmçXšÃk“¬`!n’&j`³MK'éºpD¯…ü¸E’£¸Ïä7™üS¤ìñkú¿ò+Î<%ä…Â­(µĞÍ¨·›·­Ôu¤ÀlO<QÓoŸıFk¸€k¸O»——%Q^è¸ÎAXş´¢£'n44ğœ,cpPÂ˜ˆ«,Bm8šÙQ“+1ü|øíVyP-À¹+£I6ÊğÏµ£	†Ï™-¹‰UB9)“&ŸGÜæf¯æEß€“yĞha![ÀK{ÙBšİßÂqÂ‚ÈˆlfÑ	ëq¸EŸ+(ãp3$dÂPı<dâÏŠP>£®MÔÇÊ7Ìf½Ÿ~ÈLí"‘hŒv•ÑõÆß7ºæ=mä¯fÌş‘§3|•v…Ys©%¶Í|d›Â`¶Xë«YŞZ?ôªj†h	zzsu‰I²Ã-aŞXª–
+Û“¥¦’¼>Y^WÕGüx=NXØ•®U¥aüX¬TiÉ«ìæ}Ì*ÕöMT	/Ïäs£Òß}hÎ‡´—“!³õjZÄ‡„ÏŞãªJ1×I…	›dbŸÂXVC4VmÓ}ª,^³%ŒK5•Å¢¨’©*mØùp^UUãaéí‡À­ü™°Qéß
+Ó6„Ic©­*»F^e«Tm6¤B¥—Ñ(šFò`š¬¸å¨^f½û,!yUØÌ~Õ”Ñ7™õŠ…Ñ¨/Æ÷ó¹I“ÉR%f¿h7É×¶;10ëü¸'aÆ¡q'÷/·»R¶®Ò¹‘
+[*ŞØFîÁäÏ8C ñc0®:bºş~='¹Æêˆ¡iõ jC—YóZèj¡êœğœ¼f@D™ ÄuRĞBzPµ/š—¨£ÖÍ¢£ ¢N”Ü:`–2à à®ÓHšlªv[z•jßgíÅ«näoÍªE3¯açÅ«m
+oÅj»‚à`Ûq±¨ª,ËolÁ`¢²ÖBm½æ0Â¨õc^#ø¤]S©­›xım¼©¯¨?ÂĞ.èGjÒh=ªZë²õ¨š¯·4>*U-Y ‰ªjÑĞÂa\u¹Å	3Mxo{Â°¨„şIó"¾¥›dÊR1º‰ÙÓcLY8Zlå>:ÌÈOµ…¶Óãªƒ5Nócù6±k±ìcu°ğê~\µÙ•&B¼7|î[Å­M<i1Sóâ!¿‹ß’¬»âÚĞzREC–?ÏàõĞûHÕLp&×ÊTg…’d­aÙSªUeŞÃ÷z;wEbTùA$´¼¹££­ŸòBÚÊ½ƒ˜-VZ¤ğ:Ûùkk³xr=-=™wò'Š«[«ĞCEi-^)òÖÌwÛÅÖèñv±5ş˜›ií‘QooOXƒ”ÎÿC,T­†“*¨Œ(Ê²Ù.Sx»-qE]lW»¤ş«p‹¬š	§UÛû¨‹h¿ØDÈ§1İ?ÇcäRÔÊWcC¼A/ÕªzˆÎ«læÎYÌ*?a÷À[Ü—Õ¥«o¬y%¼¶¿¬ƒôjı¥—l©_ªuÚÈµı Ç:çÛ¹‡³­qÓ"½´=”wk¥åÕ×Ò{:¾*;¹fÏ¬_uó¤İ:ñÚ»¹³£¶ºâ§¢|	´µS¤©æu€v³Ã{ÚË™=İëÍDè¼ùJ5sï0æşëŞaĞÿÁöÖîNÜĞL˜»¨"Uuÿš÷zÍ]ô2ƒì›½­R®ÀÒûï¨]ğ7QìH¸Š¨è(Ä%Üc¨\]Ú9’à½E¡KŠÊ~ cIGE/….°¢„t\í*¬ù±f”F'ó‘à2¾K”ØnICÃ²‹¡ŠƒÂ¹W9n	>I×Ï+éóæŠ`±ø0¶…ˆ¥¿«Éª…l’±HMi’Ï‡pÿ$m³åãÕ‡´b€»ù{ÈÇ(u{ùÔöò—w©(]r[{wó˜šQ¦j¶ß©¬Pı¶aWûÈúÜ–êoä–UW^‘öUTuSh‹¯oËFÏ¤5ä•¶„¶åáJ}elƒ²IÛW"!›WØ¹¸|T¥‹KUiWWç±'èîÃ•RÕŠ*Yñ©fu¥L]; Ä!ïèÆ×€¯ÙäŸ¹§«ßW¹IÏY7¶2P»‰üt$Œo'ó	[DÚ=è; P4fQ6ô*š«Ú;…Úó¬P{-©}æ”C¢s`î—¾¹Óºç´mû&˜y§ìÌõ„Ãä7_ İ;w6lŒñgûŸy!ß¾;¬SÍM3^§ 0®‹Q‡ñÇkô@Ö’)j“ÈH-hôÚÃ°Ïø—bÓ$áÙwğ_îb·Ç½øÎNÚÖùñäœÜ-CıRš»ÚtúPŞFGÊ|n]ìc‰a©uk­Îö1ÖÀ*®s¶ì}ñ·³Şê4)Zœ(?Ö£q¿f­i±>1Iâ‰zº‘Aáº™_‡.ó•ñìÏU}y¢/÷Õek®ÕĞÆå­Y7ó‡ı$Æ«ÀiœÒµV‡ìıW«ùŸ­æZkÓ^³¦W5LÛjş‡\(÷FqœÔ½§­¦½ÖÚ¡ü;ÖCE8Ÿ&^Ã‹ƒkİeqp.’¿•ÂSÄ2:Å…Œ¦^¦bèTÌÑŸ¿oïûLåî{=8wŞ´ÍğÍK/#t©_>KÃ[6é[Íu5êT.¼—MÈÑ‡şû;²­… Ş^êù4@	£:V9+¥È§óÉƒã;ÇB…!QZqœ”hwƒ°Çæ£L5 qw—ºæÉ]Ç¿7be@î+HÒwŠC\0¨[ „ÜXşˆ¥)7	´OŞ<Ë`ùeÒdŠ¿ãeÊÔqÈÏt­Ô`$G?EäYnƒÖ‰ş½UdLÒáš¥¦¨K¨Â%AÜ
+êÒ‡{È\Š1›–çVÌêôÃìbR×â§0G†Qã¢¶™™9çiˆñNDwÕßRêÛmF>ì¡Ü’ø‡Æ8X£%iF³C\¢ı^âã)ó£ìÚµš=‹Gyû·mÑ˜ß›íV„Á¹A ëX!H«ÇÀ¬óóßQĞÿgXâã!@z#chÂKc¼³q¾Ü{x^7‘•“œ(Tts·O]¸ñIİà³Ğ%{ÈQSê†çFäš·{Ü¦²£"Ø¼–_ş–ü‘_£/y°šhæ¹§›99„:ÎÊı$ø)1ü´‡çÓK1r+XPó®çR˜øë0è§°FÜë¥aöš‡`,Ğë¾«SZ@ÿJ¿¶šD=,U-‹§f-}ÀWEïDlX Oñ=úÂ¡ÚÄcá2<Æ)…ü)ƒÔ`TF¡]…ÇÒõ Zä¨WaëL®ìŒˆ	åî‰ÑÄüµ6†ğÃÑè‚hÒ‡3h‰”ÏxrTŠ'¸W"±à;6İRëóF¡Õå!—ƒF_¦È9a‹©Óƒı0ã™Ø²ŒUa‘µí¯+„) àšzVhÇDó¸ÍUMYN¯ˆw1v#š–áÊ^?¦¢Ä$1–³’OÃê^ˆ€H¯¤qÒ<»‘ „€Ëú#•¯ú­ò eœØäµİ=¬G:·¥¢Z.g:`çøÑ‚zŞÆòQX>p8Æ£„A[€!r£A×ûÕ_o~FõÀ€F56˜·e;ı¥ùÃÊãïhÆ¶(Ñºği"$@xE­‰8…Übæ^‹`g£’Ë|K[Ñ0ˆlK€ 2[&ôDÅªÍÊf ‡Â8éV¦£õ‹™Ç9QX´œ™õ‘Ñô<y†yºë!íe€±‰ú]4>nÈ ı <ÚÎ+àvÇ€ºÀ »q‚›Â8†¢Œ{Šò„ƒBÛ ô2;SÍÃœ5.âhBaU¡íäµN…sT: ÖCša€å.Ã?T·ø3Ÿ•Yr|M=H¯‡aızˆ‡y”i$òjÕsb-IEÏõDŒíşNWn/
+õ·š9}7{pTz6œ“o+ß8	=¢³ızÿ´ F¿²@‹@Â‡`SMü\È@@ã/zL ŒG\k·€%îáF: ½Ó(©•z–b„`³`£yèú‚íäStà ç.wK–)ÖÖlAñô{Aü÷zïÜù‹Iğ½×UÑ£AnBscàBÜ,T¶âUÃ¹Ìğ*ôùù)DÈ”áİ<ŒÊ\–¨ô;‚Hús
+ñ‡ËÄDÄ¼û¯ê¾AÊ¶Ï:Ú,)ì—‡üŞ•Õ)´©×ÛK"ÅA®E¯¿F8¦Uwx’×Ç…³Íö¦ş‚‚Áå70ìşA˜”gY–D@ŒÂºD@Óô¡Ø"èdp$â›qFJ–Àœ˜éxğ÷Ó[÷Ooy ¾<)€ŒØ4úıeuÈ)¾ÂÒÆË…°ºu0–6²Ã2:¼àº}ÒXÿ»çöëÖÅ×\—€Ğ TÈ‡—O½ºâyŸ»ZtV?ÍÑ"Ûr	FdsYèLFÊÒá¤{ZÀŸq9×±±5à^k#ßj¤ÓQÄƒGóº3÷ôìŞÀ•â¬Zñ”:g)ÿC >B• 9ùÊïŸ;½s<5}óÔ„3~ÚÔÊŒ¹
+a„¶Æ‰§äŒoguµÎ´l§ĞÁï¶íÀxú&ì¼jh"±*64òê««^ƒÚpğª;˜uuTËJx0†İì¾‹1²—ÈdÙéú]äÃ®İÕU_†Gó)ŞvÌCªép¹ÁÅrœ+MÉ«X(àCµUa8··õ p·»Šÿ:y“2jº˜n;I…¦99Âa•/ŒâzÈù*® è‹Í£Ô%16bQ°CKvj;zòPO?”‘Ì{>ñ¸lÄÃÉ]zK+Ûí¦ËÛyy»À—¨}›ŞCBG'äk„}â‡u»"4,’ÏiV¶éúí«9^®X=UìÎY÷ˆ"\IÎóÈ£a¢$@N
+mIÜ~!¢ç-¶Äï"¸'G’x²:W2j­³cw˜Š•"màY<–Z­Rv¨go²áwês }Â­$€««Œ”‡"“uII+«x‹Xrtˆ¸ó9Ìj…°^­<ÂË…)JsäÅUËò'@zw\ÀÚÔBvXÑ‚<¸ wˆ±ÏTŞµjîË^)¢+»½]›z{û–ˆ·Š¹ªŞ‹Añlƒâu%º êeB3ùÓÛÊĞˆY )uŒ­q€l•â¦EŒ=I3r%rU÷²uæĞ&Æ™MSÄ/&¾¾eØ˜â¨zr)€ığl`pdb4ˆŒ(ŠùjËÑX„»±bÙß6Ü'¾ˆ…çø)…>Û1)4­	}¿Q_€/•qüº?‘ÃìZB˜àX¤s,*JØ]}äóV'¡ãPBŠJ=Áxv$ø9Q?j\¥m¨Ë5Ítœ¢p~5ñ:ëf>œÍÆĞ@{…¢ˆb`˜ño7¤Rfˆ=Qx‰ #ÔC~š‡W™Ë´4ÓåA2Í¾«è|ÂäØa‰"P|ÕW8ùâîfÜÂÀ€_œ ´å1.¿øEÖaİêÅ“l½‡^ ®kô@ù×%)·D*N¦–ÁìÖ‰…íÅÉ˜ÿB?N;Â,QsT»Œ“@ıE“p«Ëx=6Šú“Ú"L²f!~Ò$tvË¸@Ê’k!ñ…°r>l;ËÖ\oÍêXkášÕlëSÄâ}swgßÉË*mIËÉ\ÀPx„N¤ ½!İjq–Sb«™R¸ş†lI«)e!™|äê½$ìà2“läÅiÙ°óÌ5BÃ¨‚¥WPPU£
+–Î@A=r*X2?s06ª`Éş
+N—,Y>ŞSöÑí–Ã@A=¸*X²N<sWŒoÀkÃöc ÷ÔMffÔöp‹¢¹7‚_
+Lwš‹ÔNˆ÷˜7Ø6@öyaGıdpÀÏI›Üñ#‘C'¸s@.9Ç°Õp:!^¡:cvu>™ÏñÌGYÚaß(x©)+AÚi:ˆõæ¬Bö'š;Ş°ĞÏoo3Î9o/Sn¾#OÃÈ›R|ì×9¼oS››Fç£p:ÃÀ	ÂEä‡ËhòR/åû,‹dÙ¾ğ*i6é:)òÁYá5¿ç85Á•&ál¦4™ÇIçˆáÑÁàà(ÂN‚ºõTùèÂ5öÕÃÀ±6§|ï'x«ª	 s.şX"{ˆº­˜337½0ğÆ¸cı5o·›[§`ü,Î,‡ã~>hK$[¸„ç–`„Ã;äi¡ëR”jo0eëW_hÏ¥øú²AbÌ5€s}»•yè2üf.rä!b‰7±5Í~úƒ˜&A¦Ëø‚æm*\Î2T`ÙvA¿à%yI²—_¤|ÎÁ1+«X€#ğPŸpSštKÂR0>w}¢­fÕ$Ÿ¯‰yv›ÚšŞ3gB›6§Ì‹“rÀí+ğu¥XX#9Gëxş—ÒKy†$İÔÎm#K¢1ğIä&üôÔ¹íü×ÙÓ~ÕÎ†dÕşøttÇø Î»*¹Î@àÏ˜\eÇkÀ¿aÁ¸ÃãóÇW@¶ãO;VÓrü”şD Üó¬·¾k9±ú¼ÓÎÎBÎÈP
+Îƒ’RÀgÕD¹(è ¯$D¥Á!ˆw\·‚
+Ú'äğ£+ÑìÊÒ‚L‡œLã*_c<f¹ÓØ_íüû/«û+ œ@˜bÚşy½}üÃZTJ/sÁğü÷z¼d£‰~îz=4T„²ĞD_ÄM‘PŠ§×Wf97Ónâãøwy3Ù#š¹g44(²v™_‰]M–oc<y2
+ê­–(vâ—µT3…$¢ÀmJöG1(°ÿƒsN'¦Nêó.¿"ş8®P S,ÁèD™'VÙJ¥¸ñöØ6s.dKX!k*³Ş+Å2çÕf±R"³^”²†2ë¥–5¤cÀÓ_orÉòúZSgBáæ½ãáüß—².$À>Aˆ÷UÎw‰Œ‘»å¸f­7ñLJQTÛg“K…”ôy—ÿ"J§·†8™Ï@ô7èŠª¾³å° ôguqùırQËğ“•E-¤5uKö"­ËqEY1
+Z…+Ëeˆ	»Çi(åĞ8Wÿ¾9vËW:>B˜ÒÙòK.§­–Óñ‘¡G Q‘L,Z‘¿ğÂ˜ëy;\ô‰NğÆS©Œ[Z’Ğiˆ° A
+>‘–Í*å îj˜˜!aC±cÀ¨<×uqœ…á3äô}nTSÒìUÖ¸–ayîõ½¹Y4ïì3(ãKÆoğ.n–ÔÛM[.1¼.qÂ0?Ï	Q"ŸñO”	RI á±ï:	¹ ‹ËJffŒÌİö²¬s–œ`AàôÎsàáÂ°İ9u…CºüœzB=G“ ¼:ŞcvW¬Ğc¾"Rààbaruñx+¢TJ:ÔQãñÊÌ©o0£,gB=dB%#C•,?(‰Æ<í×mU@^çvõsH\}—N"GÙâ(s6IêÄ°mÙ j)ß-lïRjÅÿlW¨y?]XYäe€x(Zy Ÿ±³»åWM²:ŒTWûQï¯/Øşj«£­T‚î×wñ’Éº½mïh?÷+1éíí#ñ€ãÎÆÑÃÆŞC]+`ø²¤ŠÒ$uiÔñğaßõè¹lŸlŒ€×+f­·@,êğÜhRÌ]kAƒ‚¥^Ràÿ	EœƒA¾á¦%•c±4EeÌ"æå9
+ÛyA‡£\Õ¦ÓáZ2Õ’…;gwZúúˆåys§~…V³­eKúğ²E+à@=»#¯Új%ÚtrT]Èì Ö8“ t”Št†VÑ:èsı¨´ïû‚ŒV¹‰Pæ¤ M°Ú29#V
+»_}b}»;¸G{÷R²è¿éZw®••ä)|æ×½Û[®ŒŸÉÒŸp¡±†w•\aìıY§kHèßùíy¾—EİA1Û’-[ÉpŒ}¦SÀN
+³©ÔÊ\=e¤'Ÿæ¥U’ÍÁ4,øq–+U©­ß‹ŞĞü…ö+è°<Ğ'»ÃÖMë$‰ëËVKctå*ÿsÃY2Ñe¸ÈÓ+ºñ%¶lFÚ:ô4¬^Ï‹˜ÀÊC3 —,æ…#Håô.*ŒÁ>q6İY•âL:E"ÁáîT·aÎÍ•Ï
+WñáÂ´„îçì?ä	Û°ßÇyê…Y¡w¬gU”¦¼a³“’µõ`[ïíÜae®ÎU¾ÒnæñlDŠ¿
+¸DYhå&²hÏä/J²e*d2®£·ï8×ıPGÄ']8åNd;N¹‹¼ÿ»Gr=È7`öÀ( %€¥Ñ8!_4E(hex	³Ó•³;Ñ8¥8.‹;E.Ug³š¢zøSÕ/)1ö~ªşTv¿ä²I¢ğÆû^İÄ5zâEEÚšlWn„+)Ñ>ğ$œèğ(ü~„Ïë5Ö£S¨r¡×8šôä“×¹{ª O¥÷2Š€W*ÖÑnTùüGİõ{!••V›]MĞ¢ê!Q¤©}dêQL*=Â"\¡h:—^ÀÚQÀè`çö9S¸¥fÙûß¢Émş¬….÷:–â¤ó/ÏóºÖ>lox[dé'!4Œw›ï€e“0€E÷aí¨lÂk¢dÓXXÇµ¶s¼i–*bÁâ=Ê‡Š·Ã¥ga{ò|ÁErBefc%Xb¾	§(*ów4N½´ÑXÙWƒçÅùÏ³ƒêæò^c5j¥ŒhŠ$"y~6Ïb©n7Ç‹sÁ7^Üãe—ĞªPJ‰uTKŸZæ°ÜŸ*t4(r=WÆ|ßŠ9<EéE¾)ò>şT	tZ|]Ÿ<işÊ[SW/¤ÌIÁU#h:æªë`ñœÃk/Nê\dnv½_™j¾ë­­ÙDÆ@z;{4DÃŒæSL©2ÿœIÄçB‚OWvîCç>ŸŞLöïCÿâõI$ÂÌN}qCö^(µg	¥Ãnw¯Õ&öö§õu¡÷%|ª}zÖ°uı'@G“¿‡ê©p°év×{pKb×Cp¥u5À©oÒÛü<¿i¼öê:<¼Öl9ï›[ÃÌµb´LX7\©'ĞlHºî%híâ±õP™báŒÌ`Ä ^'¨Ê-7¾¨ÀNAÂ.ñ!RneÎr*ÂÊ÷ÁŒ(‡Ì¡W5<çrºHîñÜğÇÑ¤Æ¯º¡mj%ŠRV8Q7»zº€£Ê¬â8®$¬¼æC@ã«]~$I…£‚C)#5µHÀÊï7èÏº‚aÿ®™k¡6MB,ôœ¿Å­s¼öjwiRc“ïË²kêò²Ø¥Sî’úá=óZJÆ©‹Åãf¥àïwó^÷àÑ¤í¨ŸtB§×]Å'XAcÊúáŸòãÛ~´QšÓ_ßìN¾cŸÌêéey#õ“x4:§··*C~œ¢—i:Ø,°>şçZİJ²H*yÍ(Ù_ouZöêUİ¼	{ÙƒığBx¯zú¶Ö³»ü)~Ğà "BS?rk‡0/A/ùøH©­Rò7e®‰›óÖ9\÷WNş½F†©Z7ƒÒC¢ÉşÄDÛÌ7æf^3©Ö¾’xâZ¾ÜÇÛ×Ïmd~«º—ÌÔ«¹‹à¿.À‡çºĞ=LÙRùá´/“%©2ŸöRÒŠ“2Jü(/IImijÜŞnóï/.Zıkóù^óå´yJşlx6|H1to‡ÏŞ}yöÙäÔLéø†üY­»ÙŞ’	ÜÊmímVi†²Ëk(Ò'ÊW 0u«-Ù°´<SìX¢?ÔWóH]ğ‘÷æR
+‰BŸôıö[.@úB¦¿3Ó/ÕÍõ·²’Ha~¯Èæí·‰)¦¼• ë4¯Ã6¼ì2iÎíIº@`Š#[o£I^æ}qğ]áÌñ] Ì&Ş±ú®æ÷¡Ka‘iğÂ~4ù ÕÅ½,‰‡ágò,PJ/ôß,ñë!œø°q¿B¯N›;æøp„w¢ª€ªn
+ıtKıtÍ~¸%-%¢Q)=Õ†ù©”C6u-r’—ú-&F"’ãã¸"#£Å?×œ£\­Õ~•+Ò8ËDíP•€W	¨J>\¼~[!Ø(Ó1:×œQg€ZºM¡«8(Z•¹|cíîÛüæñÕ¼Š¢uåájæ¡#šDÙz<e³yÈ§w…±=Ø	]ÏWMHÜPòÉUo	Å~WG³Nò«©Ág„?¡±vÓB@%Fìåè3Ö¯(«(Ê‰İVŠéŞ²»1,ôùB|hú¡}Æe5ñ¨ í[ÓD¥¤‚;ÂUJ‚èuBNì«µ£¿¡%8p¯gŞ©%õåU†B™a4’¤dt)ı”ƒ.a¡q…äøí3â G”0—Â£g¼$­‰VvX*&]a˜†L³qlW¨F?F]r(1^¼ú…:xõ‹ŞÁëœAƒDßªŠZ şXá‡çõísKÎD\†ª‹Îe ¯oÖ¹Ú-ó ğßŞÖÍi9æh±¤£—0VL5¦ıå‡Ï¶—}ßîî‘eÇJ#ì¡Iÿç~Êkºa¼¬æî$×Ù÷µ[×ç¢=Şªn÷RÈGCW<>wFôtl®×Å»J¿)ãe~SŞå8¥KÛñÏœO‡¿æ¼ôê6É!ğëğ¢îIù±_ıF±¦£~ÈŸê$ÎŸCKuÉ—eWÇaB;¬gÀû¥µ ¬˜¯3ŠüZ8©Í'5©ÎŠª²}VG5î\C•Oc¬‹ìcÜÀç8eô‹ÜI É¦ŠI*y(ia¤šëb…G1>6t*º¸MÌh¢ŸDÓêf¶­3¯/åÉÉµjŠ
+
+´WÁ'—¨ç$7Ò÷¥ã	šİƒ˜‚ø›£¹¾¯<cĞïùGM“ïc‰ı²øbì§®v—“ˆ'og/yçø[èX®GBãWØXyµ§Ù)“ÆO¿ÎøA†Ko+gçÕÖ­pÙ<Ó–mæX7ÒsFnyr²šIjŠİ¥|:ñœºŠF’‚tÚË)˜’lÒ¬T¬â"ûûÈ˜MUv™|¾ú¥lñ¬LQH_ C(ÛæÖ*K)İı*°¶–ğÍÍa<ÌK8Q~¢ú>‚[1Ÿ/Ì½¾¨n÷a¨Ì%€•
+úL«|µ[|.ûJ‚HL–ú¸Îh•F¸ªe‹=KT	“
+1ì}´Ì'ÛeûõbªTV
+H²òYŒ5€©‘òhú‹ŠÅíû&îI_Ú])ˆ­Š„ıú;à<<‡p8ÆúÃ›Å‹:ïŒ;_˜-‰óï÷$\2é¶6š¿²Üâ:\ˆG¨\ÃÖ!Ÿ¼”f¬Â¬—qÛD*ºêÒ/ÉX22R”Êœ
+Ğ{*øHÕ¯R-ª8«ØˆêŠ$,n¥L9S2eE“•5eJQÅ#öı
+‡âÑW	€ƒKoÈ+?·BƒFÆ&ÂB•åmÌÍn5öôáã_ÀéÀ l&†S*DÍ ùµ®0ç·r™qÃ4ß=xV÷‰›C
+Ü9îóºÿ¤½4şf‘<æ9ş“Ö>ú‚Ë²xÜAõïÔF‡wØÎ ×¬¾×nÓÑQÖ ©j	~A¤Z†"í?ÊÊİ±/¯²Í99Ï='¬Õ¹ÏZ%7=ùˆáô’ä!Ã“Ynx5>Ï/Âì»“‰’2çúçcTEPÛÌé1H“sg@ÒÁÄ”
+/q&™Çíòç9$Gm›Ó7§Æ–8L·d´ŸÂöH 1÷?:Ë.v®¯ËC»¾.PˆÜ†¡„;›ÓaÇ!Øi•ÛÈßWÌõâöö½nÿ}ßkjåÍq¥×ˆR;İü%HéÙ54z§#¾âKù…?³P.8·ğß#ù<–4ˆĞ¥Û%y`¹¿;«MñV0Ü2Ş³Ò[âVıØâóN<¤d²W^Ó^šƒOPâ¼f··%Ö‘L¢uşàJÂër®q×í­!8ÀR¦ 52ÀL£üŠG4Ş?Û•nJè]¥;<Ñ^¬<™á3}8U19,»`ğawcíd™´AŞª³Z$˜Àû­¼ñã˜}¦Ÿò)½Ú«öcµÄ(ú7İÉàs>æ“_°ú'”*¸¥Çí­0ù ÅàŸ„¿Ø±‘CG±0
+‰×Ó®s0­`5t®
+Fÿ˜•}[á#!åUfç¢Ş1ÙM¥«©‰½Òc=àQ‡£Ã2kşhG`gŞiÀ\_+«ñh9¯&éÇíí³	’8|‘"ª=Ó¬<àï§ÂéCNH+	•ÿ»‚GŸéR>ú¸+ùLïqäcV¬t=TãwÅø´ipiøz]~P„T'0Õõöñ!utê¾]²jD‹|%! Ù?{ò„?Ó¯ñŸ¹Äå>yŒEçûòiNì”f*=Ğî¾œ54Ñ¦Jı³­¼VúrZõ€TèÀ#Ÿ¡¦3
+u(Â‘ÙÁª‹ªå/7€ùtR6l^H`ãgR øa»C0‚³+¼ƒ€Cö<rX#
+ğ‡Iæ•Xú«‹z1VJ?gXF0w6Gåó
+“c`rçX›ò*†fë)ğ±wvŞøp¾YÎ^Ó±N,gwÇµ|ËiíµÅ~¨œ ìğ³
+ÇB? ÅIáoÄñG“ÿğ±µİm‘ƒìµ`ƒz	ïş£å`<ÛgĞ}‹šÿÊÇ$»Ì{a¢—·Z›~åpCmìè{G3vwó¶Tô£eLH‰óWik¯ƒm·:8ïÖÎüİ»s>a^«½İÁ¾ö¶0Ñiµ7;8ë­]^¥ÙÁş¶Ûìi*îµ4úôù>ˆ¡Ë·ßbíÓ©>?¬"9¿O…#¼cÛ¼Š˜ädQ6Bç%ô×ùzÙÖ.ø°S8şqş|ÓÙˆÒV³ı{xíÅ,	œô¾K÷	b¥òÃ—#•¥’ü<MËŸH¤i„¿¿ãçäëÛÜ‹¹şPôÏ7ûb{[íÍ­íİ½&!o¿¾øtüí£÷ø¾q`yöùùËW¯ûı¨yx½“?¿¼{ËÁƒ‡ˆ9øÑşxÓ•½ŞÓ=Ì{Mú©ğëoäm|éV×?ÎÈÔ‡{$xê<µ»+=áğ×±lÂk=ñZUèÀS9Cjlˆ…¼±‘É=¯[F²C×sô…¶m,7vGÊ‰H{ËvÆîxM¦´·™Ø>y–Õ±ÌT5(ÑºCåšÃ[êÔr\K¡BN×RGø÷Y\ÓÚ˜‡;aõ‘½?êœZŸ-gäŒÎøtÉ"NÜ&³éÌº3¨(†:¶»kkc¾‰«f0Y[£>WKìkİÀB%@‚!9Â­÷°vww À¼ø¯›»ãÊùOÖZNb;sw"ıHÜŞÂ$6\w.f°?8¹óN+O‚í DšÎÄ™ 1¸ÉZ›Ë”µBy‰“œİİÉiâ/»—nït|æH×q—4K•ÿãôòÌÜá»$ä¤1ûÆÇûú@ÚF„nË¹"¸¹B¸ñlÿ4„oö_\MëWkÖ/x!rzuvæìêÖ¦Ûè)Ì­›¥oÿA>zFø”ğÃ5·×•Ç^ï  }‹oÏı³;Š;ÀP2‹“ëÉ|BÉğÊ–¸C«kıŒ„­Yö/hI}¬›mæs.©†P)#Fbk¼0üÍ_½}¦‚g¯@¶èD¤Bšßak>¹w“h­ñh¾èYîS r[g¬s7üÕS;¿êÁ:wC„BÏàšOÿéUñd£äÅŸ÷r°´»Şúµ¬
+K|Ø1N{¿Õiv}·'m‹ëÒã½˜—‡ı¿Z4òe{¥´¹7â)ıä°Ãîîôø19Qúƒüà•mŒó3ù\V:qğE¿sC‚4›EÒYoİ9ïcüáÏ“xûbîĞË^ËwŞSŸÕ­~÷G¡ô©¢j…ÈYc³ ïG™82(ıÁí}Õè¿˜¯ù¤2\œóZ®ëï×y
+ábüjîëÖs-d„ç¨GşJ/¹íjŞ+ô Hş­Ñƒp]€®ÅûS9ÚZu‹C¡!Ä.úy¡·Áoü=Åò¾X–÷ewV[äíÔ\Ô ®üQ>6£ò{uhâÛÛUfœ>:¾Ñ§¼Uß(v¢ü}
+/ğ!ÑïÑmI€ŠZyl0_ôÉ¬İ¡¯Eâ`±5†²šÿ4©·€ér>¯Úƒ£ Ï³:¼.«ŞZĞ˜vyTGu•1”p{+G¨—wòŸ0V`è|ÀVè:ü÷wü ‹áïÓ-8J÷µŸ7Ê¸ §P™×+V òX<_-	±`€"x<Å~azÀT¸úˆ»Á>ˆ¾Z-¿¸Zşš‹K«&³ [HdNàräĞäÈAò$PŒ¥Ù‘$£èÆ»ù«; —'²ŸÁZöá¿û½u¾;=³İ5Gêú]} @G¤áÌ]×Şƒ¢ÂKJ—d&Za™¦ãÜtny™g~)…ÍŒ·ÙE3eY`YK¯KòCï©CŸ#Ó íâ(ê/9e¹½…ÔşÃ?ûš»±oÂS94AûNÆ’ 5ÚÕú@ˆâ¥4g†_u9ÊØ¿J”÷ÀÚ'Ñ4#›4ñ]ëéÓ45úøü$òÑ)õÓ<ZÎÓ‹ôéĞ¶ŸÅn\¤V×4¯7créŞUÏs…­ïšÑÂÜ¤’wæ®®6j9ğÒ%7õÀDK"Œ(†FG/?={ûÂrnz	‡<¾9qã6ûÀ‘w(Üºxœ©EÂãï4éàO®YWÔnv…·ÙšÈv1|Y |ŠûµAãê3º÷èÌÆ£fİ¨FÆ,éGø˜ò @æ]‹9T/±z£ø²3ˆ‚ œÜ!6§ˆzÒñ¡çP8¦Ka:´‹ïf=¦èm¬HñK7R;Ê,±d2õÑí‰¤Ê÷B÷šãI»Å™©~”¶Z ¼~áÍ~{ÉSP»ÿAfşşR~=#¿T¬å×ÉB~¦ÀÆU›lÍ–™lÉ«¤úGe×´/o¹‰¼İıå;¯Ù½v^…€j ½[p2¬.]O&Z¶H[×½/‘E "”öx„"¾QfF¯×VwÎ,‘/#ePüàlœ¶6ø?¿µÙimàßN«ílœ¡úı"ø_Ş_Ù±8!Öqó>qœi> –«B­V«Æÿ< ¨ß3*¥X621¦³‚0Ö+=£Õ+ÈzÔBÕâZh†§
+ R·ş{ ²Û€£ÚaESÒ­5yvÀad™°iŞĞıœÎ ­okÜ•EÙ/A¾%iƒË­€gl;3£Ïƒ?ß¿ëwkmìp®Ê'‰ŒÇˆ ™M²\ ¾4Ñ÷ºc­Õ'ûèP’£+´ÊêNÄ¥&ö¢ãù
+Ö/8ëª¯ıSõéÌÎ:3˜Ë¬[ÙÂæpW™Ós†"0F¯ºv~áXÎU¥í¨¸Å­Qİ‹yi<šãm3,?¬}ğ6´ªâ1ÕnbU‰_ğC­¦ú¿`…Â {•ïnfe{B_vİ´¯dñW°3œ	Õvg	ÂûíeÉ@nsXÔ<#Fo&V¶i[(n‹î·3T6
+;{®´ªhƒBü8Vxš]ğ›¢ÿÓ
+W©Rƒª?låeeÜ4%Î«È”xŠÈÀF
+°ix‹ +ŞnìŞMx.†@QÊèö\Ò ¬­…¶@O™#ŠY]‹Y­¨·Ò/Å./¯¬Õü{ÀYfçº’—Â¯×›3ê=Ä)6*´··øÓ´ƒ¼>¦Èu¤êáëù@mqV¾—/$+uë¯¬àl%p>(_‚Ë·×´$OV«Œ„§çF˜W `ÂĞÇqÑë²ô~	D#	¥§QSfá;.=%E£N‘Â3¤äPÍ°&¬üj  P_‰;E[¼¶ê"–ª<ÛŒ` ŠjÑÓ#EÊn¢iš¶§³|°Ì’€ûbÀñéˆ|)J}ü¸dX2·rpª‚AaóŒq!R´NË×RĞ[^ÑæM^¿—BàTø.I£dË¤bšã‡_:nüº£;GOÚÒ`ÉŞ'E,}k£ê…\ºG†nU%›G”¨Ê£Á·Ÿç3ÍÖ2à‰
+ÅîhE®+’wÆ‡À»³íè?ô)UœIkè›C+ÕÑ<ØÆ8¢¨>¹´û‹a—W2É;¨°ÈcDJ|$%ŒèÈÿº‰¾íO‹€Æùpõü.ıã”ÉãÒ“¼ûM»ÙÁ›¶Öv¯àÚ;Ë·îŸp²¯%Mé¬“„ÉÏ	“O„‰S!¯ø1r£}”*à·è§F©z@©İœöRõìAÕ1nşŠz¡ä	mCš¼“~‚Ãœíôm[Ñø7tîTò`øàûN{ê,Ï}ŞüÏã¬<`m=[nmûĞR"ä=FØ¹y´‚ä Ñ!MrØIëË'ê/ÁÈ"zğ8ã¯ëo+öíÎio5yĞµ¯K}o^@~Ş·T+ÂHÜ?½±±}çÜ4;­Æ–ƒ2dcKüÜ¿Û2¡	íN2(aÃiuöœvgãî¬óP;XM´Ó¦vZ•íÀÁmï±Ş¤'×_@‚Í¬J.òoŠaã»éE=t,âÙÉk^l_¥]oÛvç”vßĞÁ1ş‚¿¬Il°æ‚a¡,¿ó¡Ëu²è²X'»çª¨§9ÜPnïÌ.üÿ`]H]x´l©ÈÙåv¢¨imıÇ_ÖÛĞêo/M£tÌçFéšâ0ä[›·´¯dP)šàƒlM>‰Afi¡QneÁuoS©uÂx'ê·W/MË§Y7ºœ™!À®Ç¨™¼z¹—ìûëˆC&NEì‚úÄŠdÖ}@YÄ×ÌNå0¿^Öù£~£oñ;ş¾ÅßÜÑ[;!“ØÎ½‹vj\nG5a·åŞ	À	ÅF†¼¸‰^eÏ0v*ix˜gè`Ï¢13ÖÊó
+™3úğàÊ¥|ˆUmŒ>H
+İ}%º;Úâ×'SwËò1ŸBÑ/Ã|†gƒ‹Í½œõêøĞ·aµq„Qa¿¿Ìı‘Å“D³áˆÌ›xÔ ¯çnGVÚåäSüjmmªŸí¦¥c8OÃÃ{]+{÷]j	y€q$¥Ğ/Šz¢l­}6UØÚy™Š¡©V’®uP]É‡Bˆå¯è´ó0KFµµÚ³>ŒôÅY V4$¤ŒÌ0g§<ˆI£—ÄãC¡‚G¨ã˜£¯ÎÏÀÓ¢ï‰ıºé‚çA,ˆFu&ÁÁÙëƒ¨M×pjAŞ¾B‡‰ß¹ÿF ³~˜>]ŸÒ ’•âÕ Œ?¬vn­aÏkVc:ésµziëBH€ˆªêl;ü¬’`I‡PúJeİş n5ÈATÌµ[®Òjå˜a¶Ôz¹R©ÿ¬ø„Eñ¥À×ã¦/óÜõxÒ?fÂ×ÎWF·êZı®J_/nĞµÀb¨TÚõ|CÑçÍ16è`¢¹õ¿9ü¦™wÄguNĞ\«FñcšMşJş¯ÿ{õÿüë—ÿúŸ'ÿ©ÛçkëîéÙÍİ_İv1´ŒÓxúëï[Ò.ÇGŸ3ŒÀ ¢r©Ÿ Æè­ÃğwpŞ-r“ˆà)‰yÛ¨ëÙWş¢Ûã·Q_fÚò«§¾úêër‡W‹#Æo+&ü§Ç{×pÈ Qá"ôİ’Èìë“'hZ2T1×;<q•c¾!÷ÀÉ#–sxœ^p€ğ ŒÜ»+Íl	ÏJ‹ƒ÷?4&±ãÜ‘¢I=å¬©-uLj<°ï f_elÍ¨ŸÇUÑ*Wi:ŞñÜ(©'©lÉ;YG	NèìÏ“AHˆgF£¸€lp?Í<‰+Ş™êº‹bãµìÎsU[w…Q‡ÁÜ!(¡>R&ÕòA&¿Øg?Ø÷¸ë{Ö6ãw›Ì@¹14üÜpğß­Ö†İií¨Ô­<u¯ÅCtcBkG9¾\%Ã¹aŞ’S“`g°ŞV	w¹œ ûí¡w´ËãoÕa#å„.Y©&Y4Ş~Á7H¹^C®U)X+Ğ_1“'­|V·n{k[ÎWÎ–×•ÿƒ9İª)ë°Ò°¬İ£‚ÏM½‡­V[ëaGërî¡ÙQåwï+ğ÷WĞ¸ä:l úÃ·„”	¨±B¼æ§ëqfO¼lãæ··"U¾×´u{›^Û"_Lp–È‘ås#[|¾íô´W0ù®®³CáSšæÀÏè‹£ç ë uz2š»¾¨÷³ı^cØé™ods|RˆDd »ôÒRÉ
+ãÉ‡7Ğ€éí&¢@¥ÿ@ò “ %#.J7;—ş‘¿
+½ô‘ĞË©r	2 E7Ÿµv+°¡X, nûò˜Vğ9Ğoz±á«Gá´RÈp\]Ô½‚‡dW¼ü€G/ m0ÅCëĞ®†E“"C÷JN	cÍéd¢VÎ!µšğà
+HÂğ}%†a
+"D/GˆÈòÁ©ÚÙÙî"Fô9È‘bp»Û	şg—òjô)‚úïáµÜºi
+Ñ$å°‘LoSúH÷Õ›˜¸’2ÆaÆdKÛ]Fø’Ğ?"KSÔÒwJÒª òÙ¶U$&DüâŒ$å‹!û	‡à?Úh*&@ÚÅÄiª{ ,noƒU7\:&Q©LI/„›\P@dŒ9¹TjV4IûB“c€ÿH&Eö»YçF
+ÑQ¿ë»Õ²‚@—*’*„ÚüT†§m$°>IV}£ÍxûVÍê4uÑ¾÷ÿ×ı¶R~ú6^{“I¬ÏõÏ°VÀôÅt1c¹¹—¾EÎÜã'Ov9¡§­RşİŞÒĞ)›5¨(*j‰ÍØA.q‚	+”‚Ü„¬òSyßQÀ× LWÉ!šN0&iØ×BÃ>e0¿aÜûÆğ4lÄgHĞ”šT¼jâ‘-EÙİEÙ–üBEç„‚‹Ò;.¿¢‚fèfß`«Rç¦ùGìšå Ú|Í ğ¿ÃÜ¢^OWiÒØÙûØÆ–vBf™~…½œĞbWe9>·´s|İ Kr+C:bßr»ZZ Ã1¦f;é“Ö¥ò:sè§\ëÛOêd‰¹"L3—×	±ÜèÜºoÈõp>bLÁ~ö@_íMúî¤Gt[»hşùi`D˜àå?Ì¼F8éòo^¥’ÙX>GSyÏ…‚çá|©
+X¨·½5×Jó¬6šA#FÖñ-BûOv‘u†ß#İïHµ‡	¤›âó[E”wÓ“{|”eø„¹úY1¾ø=‡c•ÛWÌÜÇ¿‹].§£LŸœ”ùj„Û!«RA¾?6«^#äğüÏKò¥—ìOF~rB7fNy"¢»MzaœÉÆ™)šŞûW8Zó{W5?¨¥ÃÚxXjIh£gËÉRsÈ
+šn&`dFaŒ©LZQ®e˜k"Ú5µŸ¶-ŠÌ'CáYqVõ¬Xy’¹p™b‰®z|İ¯[3r_xFgåíkDï
+sç•y{İ‚ÇÌÂËéÜ«e®»0ŞÁ’}öâŸ,{\ûŒ÷Áõ8˜¢ò] ½¹ B_hVàc">Äƒ@èòâÄQß€±ä›§ 1ÒÎ*~ÙÎ(¿]t‰éZx1°/Ê×!P"O{LXX„<’Ã@õ‡ÁX€â(ÀÌ´ş ?G¬VÙîÔµ5Ÿ‹…Å†‚wJû¥—H‡VGÍÎ+\éEešGÕ¼UÍU¯Ğ3œ³şn™x…}z~gñB]{½œK.+K/wàDO|¤’(Z8€`
+$†Ü.öÈÉ,üg4Ys›¸¥ÆÇæO8+øÜ|àQ4wÉùé¡b[÷EoÊ‰HvŸ{KqïUE<¦f¨X¤•l¯üº­‘PçôÌ.*iÑ/ú¯L<‚áËÀÁ¦Ãa„wÖUÈ_eÂ‰?¢“UaÙİ7ô"Bu_Æ`•xPŠ"­W8DXR!;TªuŒ-¥Á9u#Öƒ¼Í Å4‡2‘‚’îD6şí’>äòT5úém¹­22”½†ELúô!­pûX^z¾o~ãñ¦€—£k.÷±ÆwÎ"oŠÃ	³C¼Iƒ3ƒÀ‹…:SK\™êı‘ˆêwÒyŒ# ·D¼Í 7âxŠ‹íµ5OÅŠÆjPW#EMÉ~¶ÿæO¯‰ÛX¹JwtgørJ¼Üû~ÃJZÜaéÃ-¢çä3§¬i›pH!ˆ”¦'üĞâğ¿y×"Ãï¤aÎ©6w±ç2=CÿüÎ)›T`Nv~wÖ­‡ÁşÛA}Ïî|˜ÀÈ‰ÒVT×™rŸ2'Ô‘£*TÇoçÙğ- |ç.ØhR(j¸˜q•ù%d$(º/):]óG&Ï#*Æ’k«s0Á%ĞqùçA|ù~òÙOÂp"½
+XàÊÅ=˜§°wØÎÌóOëc¶¦)³0I.b$¦ÒÊ“a<n(Š6FcXô,¹/îûüş]ƒl¤ ïjPçBrŒåûßñ‚³1¾	“$NÎÉÉMn#ò×KË`¹(öO¯‘iàöĞİ}”…ãnp:@ÆòÌ]]ğAË/Gçôëo áÜİù8İúĞ¾ÑßŠÍ—^^àm5‹ò­ÃgÍƒ8Éü9Š®êÂP
+Ïİ›atrşúÀ_êàçò+Dîw|"¥„üSº•¼#µ»ñKé<•·w)ŞŞ¥üö®¼ãJKÛÏå‰GÕb½zÿşÕ›çGï>üq|şîı»óÃ×/ş<>ùæÙ+¥Z–—_yŸêV-ÄS‡ûš¸ËÙ8ÓÌ…Â"h,Ş³–Í›ƒŒo}m=;<>úòÂÊ™Á¯š+çŠ¨·ÀU~VîX°•¦r´oomïí¶vv-MN+®›cÍ{2†RpÚÓÿ©ÃŞŞâŞÒöÚOY˜fõá	J6y³[{t‡:§;Ô¹~©ı¯Úù^£17e½‡7Íé‚¡j mÙüÂyö”šb_;6füUÕË,µÉ¶‰IÇ½Zï‰•EÃ7Ù°z×XrDBÉ.ØÏr™sÑ¿#¦[]é´Ÿaäû®^n¹G¶*ÒìX½ØŸ§4aBìæ‰úÍ[h$¾Î½P1§PÑî¨æ‹ÌMÀ+‰šÀÀ•$R"è LeVğÁÃ¤$”N‡'Êâô¹<“âíDzíË`[ÛÀ‘ÌåÊZ‘/½~nÿí1 V(¿3ëgLKP_àõÊÌs4DA•FƒßÿoAH_kïËÍeŸu„€Óêx¡éÖé‘‡şp¹°î‘GV<|3¾ùgÄRÓ#Ï©¼@—çÃÖ&Ç1±áF¾®t¼6@Â4öê¹ü%(ØĞP“†§E=uQ»é9¯p–¤–r4R¸ò¶ÍW6C¹ùÆ©1Ë(Çvf™»;Ôğhw—ÿìújî…Bú£_—Ëa½‚2	P¦™XXç±›V.,œIÅHÚb²le´ àHJ¼õ¹@/Ì®@º7;4CÆÇÆ’›®?’.5õ³šÎñ°ª‡Õ/Ÿ<êÑ³ht;”äƒS4Øš{á­7Šûı0¹“á<3(‹h…6bs¡­¿uî¡ã–·)±ÿjˆŠ³“úÅEiâ4³ÕŞ¿öëïÑéâlŒ/¨³iÚyªÙ’5„ã´0K¯'>úğìí£Jkmxâ\²:p…ÎÙëÃûÏÇ–CL_Jºë¨w]¿á<^çffƒ‚7q<D-ğ¹‹È;Öhñ3ÿa9”FWôôI´;7<[ÇòGñ<°€…u|ù½yë$+p¨<œ×xËg|Û}›İ³ç>±«ÙšYã9İ6=Š™Ó8¬„´[UÁH/*„R¡"Ée\$5ñËŠ7Zqãİue(ã›}ºyNE}åÍ€Ä<çÖ“5^D0˜’;vÄm¿¿É¸²>–Pä<ƒ »›œ`9ÀæÊ¬K,,@­Á9"t£R]Ø]ÃlG»‹ĞÓßÈôØL‘O+;Ä†~d	<¡à¾¹è’f¬IßBz¶€•EGQ%eçd’T¦X)¦ôü2örin|cü«àÛê’[²İÂ…QDğ–½.ï'ŠxµÈ¢†Ï]dUIaRêŠİiÊ>ù®ÃrA{¥}¯/ÎÏDWæ"QÜ÷:§Şpµa°Ï)a4±:’&†y2½÷â4h£_A‰ö‰ás¶ê›.­İ~°OJıs4–/1/Ş¼¶õôPØÛ`:§w]˜˜Uš?q!	³·êÎNˆ¹%?b§é-œ™\‰Z4dHîºF?ÏMOã¦»(!’:¸ßûuî9{¾˜ƒ°¾b4vP&ÖâüJÛ˜ºY*i­âEºE´R|#ÅÄO ï!:*ùÜçJ»ì¤îsñÙ|’œ\ßèğÀ*ö õƒ‚Ã1ŸnÔ3ÖG+izà"}¸šR}#u^õÑiËíí{ôT_ò	QNàÁ‚Ø7{‰Raë@ø¿SÃ@âÁ‘<?ù0ô8$LÔ ĞÅŞÁûçßH­’ÅÀÙO1F7¾pÍĞİÚWä¾îôcw«¸|´tróY˜:ç—a/éjGj}0ƒD)×b¡o•¼d!Ø˜;mz×-ÛjÃŞäqùÎÀ–İ™X\ÿ5äşÊ¾ã£eĞiµÒ¸´…ªeCª^6â:[Ú¬Ÿéï®¤{Z<œuAŞ¡|axzÖ­3×??exsuh(ôìz¦Ö¶) öÜã?·aÉ€ëğ¹R–ĞµÜj0‡|0Ì½BÛ¢,-š2¸Ğ¸
+W	9#t ›Ê=Ï==Úw¬uËğx_Jğ@@¢;Yå•ñû`=»´`Ì¥äÁĞ’êgüùš§Ãù}€×Ä5üI±7@°¦ôæWfM³õƒO–
+*)tşµ~ö´6-ènÉõğq™]r·À°Ö ´Ğ~Ğu¥f¸öÒÓÃ^ŞÈ×™ÁY·	İ‹¦³™çr[,i0ß´Í’kÒÜoÙš«»ºËï2ÔŞ<O´Š5eâû§ı…<<8¯ÔC*ı¢¯’ş‚Ù$2Ìy_)¸änædŠà|²A_B—	¬ug`C€aˆ²A˜ O¡’Ö€uœ‚šÖàL/¢ V¥ë¢Ë¯BšsGâYĞş©ôªéôfÄï…3g89ÄQ]ÅE¾P)£øq2Ğ(<à>Rğ±pe©·ád®Ê—ÑB¿3küæÕõa {‰Œsà“LiZÖ:ˆóˆ8Ñ3<ë$Â§'>˜™x³h¥2ü„AÀ’B¶kñ4À¡ÈkºÑÆŠ&ùû*Úz¤"1›‡j/ç-G&€c¤î‹Â­æá…|—1? g¾ä¯2fG2cz¤¼IAÃU.@Y†¿N70ÚÏœm<A9Ä%²‚ØO×QÚôX²Îıá¬Ó„×Óë1”Áµ÷¥¬neà€éÕzğdmâ`&Q=÷áÏ!h]Ñû‚Û6ïÅq¥!ŸrG¨Î¦‘•o¯¸eäâ®Q¥m³ßHª°½uÇ\5¾Ri°€/„÷#±ºÊLÉ÷%G*È)$) üÇ­?'¾L}w•/™ó¢ã8Éa­TãÆ·$UÀaù@®ê6`É}ÌA…ıWÜ€pU§şİb¼q®†!OĞíŠFú_)Õ0¾BGx…¢>Ê°vG¶ƒL£æ¾ó•ÆÜ3™Æ+ôpÇ-è*~ã%r£ó»Ñë“|ß8üâêQ•¤©ÌÎe„8ùŠ^œbCè]–O«ß-HÿÙ=n\ÅÇû<í*Qÿ|™—@¥r˜d×0-mÊ{äètÍª@`Úz®‘‘€M&pbëW€¤u4ã¢Ñõ1¹Xm¼ÙAì‡¡{áı©ÖiŒa2Õf¤¤à˜åEñíM@“ÑïtCc¡¤·b­È/9Ûå?`•nˆÌÂüÀr!²ø<rFO>‘ûíUışİ›ã X|(±ÊÒ¢1…áäb5úŸ8¬Ÿœ•á"P¨NÑ4Y½‡4h*‰;æ7^3dí;¦"SH‘)•°œ–ªS=ìè@û"|86©‡‡uëmœô6ôG,ˆ-~vĞ‘Ã»¥ßûóQf” EÖJîÅ	u`€`À›ÑÓ<0:,Ë)ÿ5¥_Â>·Ë-*…´¤ñÄX|j°¦ZàßÚ5óo¹¥ÜŒ"‚æ@ =¥s&6tÚéı=Gêç,bXDj‘K$ïÓNZĞB)@áïEXACOo'z/üâZïEİ] |ê‰øâh¬ÀäJŠOÂÙ²dë¦XÀ[Áï+
+Î8g‚‚óòK­LrK-®®Îsß^Ën¯_\‹´!%¼œĞƒÂçğÇÂg'kôZe­au1ç¸‘tA·ıŸ/3Ñå¶¹çùÛ›¡°İ¥ŸÌrK?>CF÷åµTsâ œX(.ÏIMtuÎ¤+ó6öXñG¯›òëXùÔ<Ra?}àlôTùèïø¡wh\¡_£ğ!]ÀVÀ·†¼™¸' ¹$‘/‡Ø¡ ¸ğH°B©CÇõ¹0nä3?—­ùp¿IÃÈã	ñÙïå¢Ÿ>ì‹…&øH¾vü]¼Í>ZPåï¿Ù=y’¶¯®ğ!½õ—0†f5òkcLÈU(äxÕV¡jKF®ùôA¶Z0gÂuÚo´ŠE†f^æÙ\½=ß(hÑ”¦qÈª€‰r¥a õËÜõT¤J—a…÷¡+· S\A„¯uÕ/SUèÿ)ÈÄ Ãñ=~ñçñ³O/YäÀÁ"İ°pÔNy=Ö²>¿xöéğ5½…¹½å®0xòè€Wü£cõ W® Êp¥öW›ÕÖz“B[ğ…6mvÆ¯"Ï+ôğ%LBø…uW™Ú½'OäŞuë;Ç\?ıâF¬[¼J”§õ;7hË/ñv[ì|ñ@E(u±“ßõN(ù >ıbˆı×ç’ô!ÈÕ³DD;c¥À_:p&DÜ¨=øIÀë!íÅK¨>–/oøˆ^‹1
+cæØî^İcdûı<WE8=gà âºÒã<r5lîëX*ìüã­tú¹¨Àôîò{¥†|?(e§,aYŒÜ0ğ^¿¼ª‡0Td4ï5´'’zÄo@’ó<Va ’yIÅ›§.x“&*'ˆª)f¢ûF=,{*5ûÇê}AÜ8dÄìŠr´0$³`@[ö)‰+“„ì-@@İA<]“ÑİÓ3tÎ¯•$UœéuøÜÄbVEÆv2”õ…~áyi’3´íq}Íu(Ò@ãâ¼î/À¸Z˜~Í7¦~?w®Îíî÷%W ô¯Ä˜ìıË‚¹ıİY”’îÌ¶
+uîÉk	åeïöö;‚ù|ÃxRhæÓ/Knø>°ÆeÀïõ.xX¼ïK®EõTşYÅF<o\8âó q.Y§=¯~ıÕ¼Ø#;ÏA}pÒóøëÂ7(uU³\k+œö[¼p×ÛÆ¸—¤IÍyc–€O„êìhQÕí«yzÖ5ÙéeWı m’»%àbH~:Ä©¬º=np÷"€rÜöÉ¼ŞK`)ˆzaù¡îƒ„t¯fkäkÆb>`4Â÷†8q©fª,
+à½âóøyÂ'ÁEÑ³â[t.L¶}OÿS;Œ§×ä¥©Ön¶6k¯È²¢v4ñµg£Q¼;¥µO!ZF„A£öŸ§Œ¦TxİgGı`“Ì©Îë£(Õ²3o¤ıòï Zä?æA
+Üæ$[O£ïa'šÂ$Êºøs¡C,•Trİ/2îôÁİğ¬¤ïÕ[Û{øÔÈĞµT^Å‹¯n¤ççôû¬üÿ“¯³rÇäş«Ë¿½ävyLåÎ8^„2Š@kzUƒæ¢ ö/?ÀÿT€íé•>ü	ÃXO€Z/;Í°†©5˜“¯jm@_ët¿Ñi·6w6w7¶77õuº˜§YÔ»¾ÓwäF!€&U÷mø&OnÜm5€üŞÕGné¹b²Ó8BÍfWw†&|¡‰^qMüO7>OT»ºk¹.9´£Qjƒ*oÂ¿¶6½ ×ì)ğ	B?NèÆÆM†](Á2Šç ŞïFôÑnV…´]Â1ü Pæ3†ùÓ:tãyFÖETB 	}W, uÜcãhtİy–Dlä|f“tNgÔ“ë£¹ÓÏÔM¹¡<÷ãm´ä§«3OFõ?ÆŸIuÎõç“8³zñú·­/:Ië­½˜ô,ßÎÍİ|?iiˆ´5ÀlŠ]"<•|Ú×PÇ´?¯†äÖ[î$$µMğùÁ™CÏçé¶4l‹	Ç°Àè¿ÙØÚê®ãïëFJ/Á±è°ÑtÀê"ÇİÚ²Ëˆ¡Ÿ°kÈ©ÄzÂ‚hÒÚ¬_†Ş0ÊÖéY`)À×€Z»)ï|IV¼$£:µ|¼z[øŸ6á
+'ß•	[D„=+ Wlè:zÄ1öò¦^v	á­oJÏ«KoóÒ­–QèÍßòV³ù_wËèĞ~örØ“áZîÊ$vD8æÛÖÎÁ·Yké#Œ$úW»İ®ZÔş§Uˆ79ğì¡i¯˜öš¶~ğS­‰b#˜TÙÌÆ†ÙÌ:b9şúÏÒE‘¼'Ğ>ó$œ†x¨éÏú•jq½Ÿ„×¢7üÍ¬gñTn–JÂà¦©G+»ş÷w‚ì»Éâ4¸;]ùwùl*ÿ®Gô•ñ±L5R’§wˆ÷(ô9ê®1PE:n]1UKÒ*6ÏbµÖ\b‡RæD¼]ü¯œap•œ†N’‘¤4'I&{ÕUÀÒ‹®ÂàqÜœ%şG“]Ñ³(>ÎMåûwb¿*r‰ó˜wË–cO#V{&±Òx Ÿnv»À x±‘H2
+ó%HÂ€ß"G5-l€—÷Åiá•øµÕlŠ\Ñ½Ì?·ğ·8¡›°)KÑvé@ T²Ğàè8¢°#Ğ’]®%XUãÍ8ˆÙkØ}pìè ·ºhÓv²¸.Û½§áŸ“Ÿ­šşlÍø'+>ª–ÀĞ Ò÷£ óüÏ#¬z,£6ŞF~§q/k¨f(PË!îúç,qÿ-Zü·óbè©Ôş¿í{x‹Š\ßR²<_â$qçoãİûéß.ş÷ÏÀ5õ÷àŒšø98{¸ê28{°æ28{¨â£jıpF-Şg9²GT/ş¿€i°Äî…%ä`*`iÿûg`‰šú{°DMü,=\u,=Xs,=TñQµşX¢KÑ$³š„¨öƒ•!Ê÷ï§ş÷€oŠƒSØÄÿ~œx¬ş#àôˆªKÀéášKÀéÁŠªõ÷Áéı¯N/šøßÏ€“dù³›ƒû03|É6®)15K[‚”Bë7Eñš'ö4ù¢,QMbñU¬õ7Ô<ee‡¦C‘šŠø–âec{{ç®¡ÂSÖŠC15‡e¦XªºBì3«+NCu··¤ˆ¿[­)ØÁíª­sEAuÍvs™’a3WITWmm/Óf,ëşß•ÑR¨44bá›¦Şìƒ£LAXÔuÏJÊ7]G])¡µ§ºş{’ÒOGÉóNÁd*µËM]‰§‹%…º©è-kr(à=(a°8y}ÿ$àKh‡%^ÆèÁ˜M2¹>f¢‚ÎÍjEËfÓÎÇ+azºêvpïÖwÔ^kup%ª¡¼}O%vµ¤Ò==ù£{G×®ª“åÇ´U½ VÚB¬ÇJÆo¬’b`—ÿ-h«Áç˜X—i´l¾	æe×;.3€Ÿ°£Yª²çêî€-¥ÿ­§ÙMA%¢iŒ‹óÒëŸ*íE½İÜtÄÿÛUÚbÑQhZZãd¸¬İišÃíÍG#íÄkNèºm ?›f¤™­ÁfóPWsî-+Š6¤<Y¤%¹w>›,Xªã?%0<kLÃ‰‰{Z³Öj:¤›+h„8o˜¼ŸDÓ
+}ªÇ5%(ÖeIÍ¬N¡•H²Q¡ß­½Xr¬·éXß§Käà°¡‘£jTOCï.;VÆLøˆJ5æÂË§ûDËBÅæc·÷œŒÂ	ÕÕxØv-ªèlÉ}e™ŒÉ*^µ¶õ{X<âxëƒ„ºf\ÿpÂ³|2eî .`V­’Méz™e›ÃuÎJáÆŠU§®B oâİ{+wèıJXQ›K•µaÙÉØB;é[y.¿“L—H,şv3_âû¡¥Øvõ¾N94©Õƒ±DHî„–`éLæAŒn³YAUK€ğú÷ó¸C‚AÑ®[I`‘Ã„V~h›_.!4º¹Ö¡WjÈ·ïm„ê¦ çÆ¼~tK:÷|Ôôóo/2µBüğ:Ø¤?ì_Á¥²ÿØ»–ŞÆm |ï¯0¶—>’B¶,É{ÑSN½¶¥À[ÛõB›vùï‡¤fHÎò#ÈŒÅ"‰ÄQ>†ß|C™x!ÖÖ¿†gUÌ³šœ½Ú7¿(oDz^~ƒŠS‚Ú'·/ñ
+”ïYŞ4õªİ	 œÁ ˜àÓ¡ÓÛQû¡B˜¸¥Üa¹å+–éuµD5ÓÊ-¹jÂ¹•,Ò*s¥˜I•ˆeœØßÏ»Ó¹ø?Bğüt²±[”Ä !ëã¾f‚g2{`‘f^Më`½IX‘Á™U@Ï¼Iºà€2n]©±ë’5WŒåúƒ¿ğî3OŠ†A/øò&Öç®2r"vWY©0Ğï‡†\j:û­í5­çÙs$8À¾‹ê~V³ª©Ï²× QÁ^iIÁ^IÁaR½ò¬š7µµ— ½ŞÄåEµjÎqöí´ğEŒˆ&,(K&,(
+“
+,8y.ÖëjéPál³ê{î†©i×«–ñõ&ŞzŠc ºÜÀáÜÓ™2(ZàDÊU)4Ø4}°ÔX m
+EC'_pX)Óvú#Ö`\{Ép‘|Î’®\âWs-*ê£¤¥¶e¡ëÇ¬ŠİD±¶´5ÜÄoò²fçû¾³©c°¿á¤Ïb,aÖ¿}ŒÜ”ï88övŞˆ‰“¦ûO§SNşÉ¬»Pê×-ïÑf¿?óÊ7Bt (ùòõz}@é|J^àuû×—¥ZÔÂ{ˆPÉ­ÚöøMØüèÀÈ„B#4”Y5@>W´euŠ:¼!îqJ¥Ù\“Ší3Õ±·²—ÔÄ+ïö ECqûÛâØ£!0¨Šæƒ+v¾0íƒ6øŸq•¡·Å;±Ê>×AU¸òÚ¡­÷k\ëCRIWèb1Aİ¾¦5à¥W9Ö"ñ½ò]%u—½µ¯íò÷Wœàˆşn°ï›À ÜC„,•÷[¨µáü»BtšÙÇ†«'Ùı¦P‹6U4L¯ÀdîxšÉyüa8Šœ¤À%#°	AªëãAG*Íö~8\!"C4Ğ1âF•Îƒ]H&²qíñÛ¢73è|„c(·İ`è6–¦ãÍçóèä 0êÏsÙàW/£‘WR·Ç/ê#‹D¤¤‡º&T×ÔE§Ñó&±dG¯‰êOrâ°”şÖÙIš¾œ¼N7.¬˜à÷ˆ16OB^~Ù•ÁÀã	PèÎ=ÿ>Á<f§>–(âÌN=VvX1¹·‚0Ä3IIü”!¾¿s“?˜›Ìtİ$…8èÀi‰33IpPâv¶œ3ÉÌ ¤¤F’®ŞkÒ§¾¨UÈ‰—1ÀÖ¬£hèÔŸÛ0àÅş¥õ3¦ZVå|Œ% RJ(RjQXq|VXÄëÃó‹~lÖêÍC-pÍ3gÉ¹6ğHcg‰¤{Që7À™‘'Ÿ»juíNF$=—iü }‹« ²4 —–½ šåGˆjƒæ[Ø˜ƒíñNÁŞšBª%Ÿ`¬]írÍ¹Ÿ>)WlƒRf¿–ä­½çÃqi‚¯N-¥½Rpâ8õıÂ*«‘3@ùÏêĞœœƒHÜªö2KNI73*w8&ØÔ„ékà¥½IŸ3¨…U¤Î€½*úë0Ø½ÈfÛlv*+<vˆÊDğó“êµ¿|¤Y@&Ä'<øí	>FóöúS÷ËÃ‡Ÿ—Oô¼ğß~>SçÃ‘¯Î0ÇÇ½-ÿ<˜Ü ºŸÔ‘l?ü  ÿÿˆF"Ş”                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              ¿8
+ Uû7vh N7
+ !7Å 
+ ·@7k8
+ äB7I
+ ¾}7M?
+ ü7E$
+ ìˆ7G+
+ Ÿ7?
+ }Ë7ôV Î7Ñ9
+ "Ù7F ƒ7Ï<
+ é7aD
+ T72 ù27{,
+ f7I*
+ x—7Ó"
+ G7+I
+ İ§7g
+ İ³7É
+ :µ7—+
+ ÚË7³E
+ Gó7êa ûõ7³(
+ N7} 57K
+ |7Ö Ü 7·9
+ ¦.7¯1
+ Ù?7G9
+ £H7ù-
+ @|7ç"
+ (…7Q
+  ‰76
+ öÑ7)
+ ìÙ7	K
+ İè7Û*
+ xó7ë#
+ Éö7Èg %7ë"
+ —*7ø~ ‘.7ë@
+ µ]7:
+ Pk7'
+ )q7şk s7°y  €73*
+ †7‘<
+ q’7­)
+ ¸7…
+ ¼7i$
+ "¼7÷K
+ "æ7,
+ Œ
+7uK
+ ù7ù
+ <7H
+ "?7	I
+ ·a7,u Sb7
+ °m7¹
+ bs7ID
+ Ğƒ7J
+ >•7,b ò›7üg Q7i$
+ Ğ7*‚ ÁÒ7Hq Ú7M"
+ ©÷7õ
+ jÿ7ç.
+ é	7e7
+ õ7)D
+ Ó$7¿
+ ™97…
+ Ê97Ó'
+ »<7CJ
+ ğX7=)
+ Vq7ı)
+ ÌŠ7ÃJ
+ İ”7C0
+ L¢7-<
+ ‡º7ÍE
+ P×7‹@
+ »î7úp Øğ7w
+ ğô7Ê{ ¦õ7“
+ ö-7w/
+ az7ù
+ Í7œc á7'?
+ }â7u#
+ Åù7ç
+ Š7õ/
+ F7¿
+ >7÷
+ 7İ2
+ D#7ËA
+ œ#7Ø{ 2&7—
+ t`7k>
+ #o7@
+ Ä™7Ï0
+ †¦7&
+ Æ«76
+ $¶7å3
+ ¸Ë7'2
+ ÄÓ7o
+ lÕ7 i så7EH
+ H7İ
+ 7H
+ (57éG
+ <7ªe f\7.
+ Åa7ì_ qg7ÛE
+ k7¬_ v7éE
+ À–7¥
+ ı¶7ï'
+ ˜Ğ7/
+ 7ğ7g
+ +ı7I
+ p7›A
+ |.7û7
+ ?17ªe J97•
+ Á<7…H
+ 8G7® hW7‹K
+ t7¿F
+ ‚7½
+ :—7ß
+ V¶7D
+ Å¹7„s 7Á7÷!
+ Ö7ÈW ŞÚ7‹(
+ ãÜ7™
+ Êï7«G
+ b7ç"
+ ‘-7#
+ 7G7±6
+ R7Å(
+ †Z7‘H
+ @i7ñ*
+ $p7™1
+ ÎÎ7e>
+ ôÚ7['
+ êã7õ&
+ vò7EK
+ ;
+ 7&
+ ³1 7ÀW Í5 7/K
+ Í< 7¡3
+ ÜX 7}?
+ ŞX 7k8
+ t_ 77
+ Ñ€ 7Ù6
+ ì  79*
+ 6å 77E
+ Eˆ!7Å1
+ Z!7ñF
+ :˜!7D
+ o«!7û.
+ ¸³!7ó)
+ Éá!75D
+ Áç!7ÓD
+ P÷!7‰F
+ “"7&
+ É"7}"
+ s""7Á&
+ „="7.
+ ŸW"7?8
+ Wx"7<
+ µ¢"7Á
+ ¶Ê"7÷7
+ ù"7¥7
+ '#7¯(
+ #7şp [I#7–g ŸP#73-
+ ğ`#7­(
+ –k#7e5
+ ƒ#7û#
+  Š#7/A
+ µ¿#7>| Î#7M
+ ØĞ#7c0
+ ®$7
+ t$7ûK
+ 	$7?J
+ ­$7’n &$7Ñ0
+ y4$7?&
+ ]K$7%1
+ çS$7g,
+ ˆ_$7ËK
+ l$7Ú_ òw$7k;
+ s—$7eE
+ :±$7ã?
+ wÑ$7?"
+ Ú$7é-
+ £æ$7¥)
+ Ê%7[+
+ Á%7¹
+ w!%71<
+ 5,%7ãF
+ 7%7ßI
+ sf%7I
+ ¬h%77G
+ -„%7„| ›„%7z` Œ%7e(
+ ®³%7Û3
+ ¬Ã%7'
+ Ï%7kE
+ ”Ö%7’ ã%7?
+ ç%7b ï%7G?
+  &7ç"
+ î!&75
+ ¥%&7á.
+ "<&7õ1
+ >&7ïC
+ 6?&7÷H
+ ‹^&7ë.
+ øk&7{;
+ Òt&7å
+ /†&7n L‘&7g9
+ %“&7Á.
+ W¢&7›E
+ Ä&7¡"
+ à÷&7Õ
+ sú&7ÍE
+ Ÿ'7Ny Í'7£9
+ +!'7'B
+ $'7ñ
+ Ÿ0'7?
+ A'71
+ ¢H'7Q+
+ ‹R'7Í&
+ de'73*
+ o'7
+ Qp'7İ<
+ œ'7A8
+ È¡'7` µ'7b Të'7±
+ 8ô'7o4
+ :N(7K
+ •V(7ß*
+ qe(7bi ïj(7‡/
+ `(7“6
+ õ(7Í
+ *¹(7b îÆ(7U@
+ :Õ(7E
+ Èğ(79B
+ øñ(77
+   )78c )79
+ )7ã*
+ /)7})
+ ¥F)7‘@
+ *H)7g.
+ åV)7
+ \c)7¿J
+ A„)7ş -ò)7%
+ Âı)7q4
+ *7tY \*7É
+ …;*7!E
+ µX*7Tl ú[*7ĞT i*7…*
+ &u*7|_ &*7e
+ é¦*7|` _ã*73
+ B÷*7ÑK
+ Æ"+7IJ
+ 6&+7"y ä.+7i
+ \D+7+2
+ zT+7ãK
+ ÔV+7O 
+ $m+7a*
+ '+7-
+ V +7
+ ’·+7ù#
+ bè+7‘E
+ ë+7û
+ ôë+7Ç
+ å,7w
+ L,7}A
+ ö,,7¿*
+ –6,7c
+ †;,7£6
+ ŠC,776
+ ¯C,7È_ éD,7?
+ XV,7K=
+ Û,7+
+ ğ,7I9
+ E,7Ï
+ X¡,7»6
+ ¶,7Ã@
+ çù,7}
+ êû,78
+ j-79E
+ µ-71
+ —?-7·"
+ YK-7×(
+ ¯}-7D
+ Ñ-7–e `Ÿ-7ŠT üÇ-7u(
+ ¦Ğ-7e5
+ hŞ-7·F
+ Óá-7<
+ Æı-7#1
+ ¿4.7G
+ ¾6.7ë>
+ sT.7ó 
+ Íh.7Z j.7c*
+ Ì}.7Ğc ;–.7m:
+ a¸.71J
+ áÌ.7P| ñŞ.7u1
+ /7ÙK
+ Ÿ/7•
+ !/71A
+ ½/7A4
+ ú/7£6
+ ™&/7})
+ F/7g>
+ ´L/7%3
+ ØM/7?
+ ûl/7Nq g07åF
+ Ò107};
+ |407®_ s;07ÅJ
+ …>07‡K
+ Ÿh07A
+ 2n07£E
+ ´y07£ 
+ p…07ÍG
+ Ş07C
+ 8¤07òU É07ù-
+ Ùû07#
+ »717Ÿ 
+ 	917­&
+ =I17ñ
+ -m17ÿ"
+ m17I%
+ ;17¹8
+ 0‡17?7
+ òâ17i$
+ 3ì17ƒ:
+ Ìì17«F
+ eô17¯D
+ *27å'
+ æ<27!
+ ©=27¹C
+ XC270
+ »L27A
+ dt27)8
+ ÕŸ27‡
+ R£27},
+ ÿÇ27ã/
+ çË27…6
+ 37Ât Ø/37Õ;
+ „137ñF
+ µ237_2
+ Ã937s1
+ Ø„37ãH
+ ¢—37¹F
+ ¥37ÅK
+ \Æ37“H
+ aĞ37ËB
+ fï37—*
+ À(47D
+ ô/47#
+ •B47
+ şX47QJ
+ o47ó
+ ao47ß
+ ¹o47>_ úq47` M{47„_ cƒ47
+ Ê‘47ï<
+ €š47“+
+ ³47D
+ èÓ47É!
+ Ú479C
+ ‹Ş47!7
+ Iè47½%
+ ¥ô47ÛG
+ ı57B
+ ß.57QA
+ 657,
+ ‰F57ñ
+ 0M57C
+ Öf57
+ ÿq57ûB
+ |t57E)
+ g­577'
+ X²57
+ cº57ç
+ ÙÂ57i
+ ŞÑ57_;
+ å57™F
+ ‚ë57?G
+ ‡ü57‘ 
+ ¾67©
+ 067ã%
+ ò67g
+ '67;0
+ œ,67äc Ù167‡G
+ %667=
+ İv67‡7
+ „„67Q3
+  ’67s ™›67=
+ ¦67Ï?
+ EÊ675>
+  Y77Hv D\77L‚ l77eK
+ Ør77Ÿ
+ Æy77½.
+ }˜77ç<
+ I§775
+ üÃ77ñ%
+ ¿Ï77§6
+ Àé77g2
+ ½87şa 587Îa Í87F
+ ¨87sJ
+ K$87Fv B-87‡
+ ¬L87KG
+ R87İ
+ œ†87Ë%
+ z878
+ µ877
+ ñœ87óK
+ 
+¹87|` }Õ87U
+ jğ87E"
+ ö87æx ‘97¯A
+ Ú97G*
+ ÷97HT &973A
+ N;977
+ ĞK97“J
+ Ec97Šn c97”b q97Šs /u971K
+ ä97€^ qÀ97q4
+ %:7;
+ Ş:7õG
+ ¯L:7o.
+ ?Y:7Ë
+ 5f:7g-
+ èœ:7H
+ ×:7±J
+ }®:7‘9
+ Ø»:76
+ 6¿:7F ïğ:7ßH
+ ò;7ƒ;
+ À[;7	D
+ Ÿ\;7“H
+ yr;7!5
+ ’…;7o â¡;7ï=
+ ¡Ö;7D
+ dÙ;7SC
+ İğ;7N` ¤ú;7c!
+ <7k:
+ k<7ƒ*
+ ì6<72
+ i<<7(
+ #y<7}.
+ µ¸<7ç5
+ =7W2
+ $=7õ5
+ 8=7G
+ …*=7İ
+ ”T=7ğz H]=7ÿ>
+ e`=7Š` òs=7ÏK
+ •„=7!"
+ $¶=7¤` Ñº=7hj æ=7õ/
+ xî=7v` Ñ>7á;
+ ‚.>7H
+ ú2>7IJ
+ S8>7/
+ ÷A>7¢] 	F>7S5
+ úI>7¹8
+ Ò‹>7M
+ ¡’>7QG
+ ä•>7ë
+ ^¬>7Šs …¯>7E.
+ 6´>78
+ ¿>7àk Wí>79
+ -?7K<
+ S!?7
+ e!?7'D
+ •E?7 _ 1a?7§#
+ Cˆ?7Q
+ Œ?7+
+ d˜?7Ç'
+ x?7‹:
+ OŸ?7I5
+ ¡¨?7C@
+ T±?7“
+ Ì³?7br Ô?7í;
+ g×?7vh ¿è?7ï+
+ –ğ?7k0
+ Ïı?7Å@
+ Â@7u>
+ q@7i7
+ @7­B
+ -@7™A
+ W@7ôh ¯„@7?
+ zÈ@7=E
+ ÓÉ@7Nb lä@7İ*
+ ú@7Øy eA7‘*
+ ÿA7_'
+ BA7Z ©A7µ6
+ ¼"A7.
+ 46A7=0
+ `7A7½C
+ $=A7>| vbA7b 6wA7ı-
+ |A7
+  ~A7»5
+ ‰A7/
+ ¥©A7µ3
+ ¨ÄA7a9
+ ÓA7ÙD
+ ĞñA7cF
+ lùA7k/
+ ‹BB7Ó
+ FiB7í/
+ ‘iB7¥/
+ 2rB7³'
+ `ŠB7Vx 6‘B77
+ ıB7
+ >°B7a
+ Ü¿B7]I
+ îÁB7õG
+ ¥ÈB7<
+ ÍB7UE
+ ·ÎB7#5
+ ÎÚB7)E
+ úâB7?3
+ &æB70f ÷B7#=
+ MC7o NC7r •C7G5
+ "9C73+
+ Ü;C7U:
+ e?C7
+ …QC7K
+ 8SC7¿
+ —mC7
+ Å|C7—4
+ ÅC7ï
+ £ıC7Å'
+ Ü	D7A
+ ¬D7õ;
+ &D7r[ gED7i4
+ 9}D7Á:
+ MÁD7×<
+ ıÖD7¯+
+ åØD7
+ ıéD79B
+ wêD7b üD7‚ Ğ	E7JZ §E7™
+ 2>E7õ
+ AVE7C;
+ xE7în ¤…E7~` ÆŠE70c Õ¦E7Ï0
+ 8íE7Ä[ F7i$
+ ß,F7Ï3
+ °4F7OK
+ ixF7Ò^ ÃF7YJ
+ ÛF7ó
+ åÛF7>~ ,äF7i4
+ qğF7i
+ Ö÷F71A
+ ­ÿF7OJ
+ k!G7a.
+ ’1G7z^ o\G7n ïŠG7ı>
+ Ø‹G7K
+ —G7to »G7/
+ \¼G7x` œËG7Ô^ HÛG7P‚ 	øG7k2
+ fH7ä€ $•H7
+ ¯H7[
+ 1I7bv ôI7'
+ 72I7Hq ü3I7p` vOI7	;
+ XaI7™
+ ÒnI7;G
+ ‚pI7M6
+ M‰I7·K
+ ÄI7İ
+ ÙI7E
+ Î1J7øa òCJ7§1
+ kQJ7,} ½WJ7”T U_J7ŸB
+ eJ7)/
+ BxJ7š[ K£J7Ó
+ s¨J7Ç;
+ Õ¾J7ÁK
+ YÛJ7` ~ŞJ7-
+ NúJ7Á#
+ =K7÷6
+ 1K7Û*
+ (GK7/
+ ¡\K7ñ>
+ “vK7‘0
+ ¨}K7©B
+ ‹K7D
+ ´®K7‰F
+ ˜ÇK7}K
+ 7ÜK7b eæK7b ;$L7=F
+ ê@L7m'
+ /LL7E
+ `L7ßA
+ šoL7I
+ ÆsL7…'
+ }}L7o µ£L7i4
+ ¦¨L7a@
+ §¬L7“G
+ ]ìL7O:
+ ÉM7A#
+ 0M7Ï(
+ M7Ó6
+ ÌM7¶s I&M7İ<
+ ‹5M7’f ”=M7Üe ÿSM7W
+ x[M7§-
+ ØiM7$c zM7,
+ &M7_9
+ ¬•M7_
+ '·M7W
+ 9¸M7{
+ ¦»M7D
+ ¦ìM7M*
+ gN7©/
+ ½N7ÏK
+ vN7»B
+ `&N7Ë
+ à&N7W6
+ #8N7¹6
+ ÍcN7§;
+ RiN7ÿE
+ …‡N7	 
+ e¿N7ó5
+ ¯ÄN7E
+ ĞĞN71E
+ ¦ÓN7ÿ>
+ )ÛN7í 
+ ÅşN7p` ÈO7s TO7u4
+ lJO7ÛI
+ ‹OO7œz  ZO7g+
+ ƒeO7:[ ·O7ÿ4
+ JÆO7I>
+ ÆÔO7ß'
+ ˜ÖO7©$
+ Ÿ×O7áE
+ sŞO71
+ 0äO7S2
+ 0P790
+ ;P7 } +
+P7I
+ ÷&P7¥*
+ „5P7,
+ B=P7É
+ AP7E.
+ HVP7©,
+ >ˆP7ËG
+ '“P7»F
+ ”P7½)
+ É³P7ã>
+ ¤¼P7×6
+ ä¼P7«
+ øÒP7‡*
+ \ëP7ß%
+ ŸQ7ÏF
+ óQ7ï7
+ ª(Q7Ë;
+ ¬(Q7o=
+ ë,Q7+
+ *cQ7y9
+  hQ7,‚ ˜zQ7ó
+ ãˆQ7×=
+ È‰Q7F
+ ƒ±Q7I
+ FûQ7w6
+ –R7µ 
+ ËR7’e ˜R7%
+ nR7İ%
+ ½R7
+ 1ER7a
+ %FR7™G
+ 4HR7/1
+ §KR7’` ”kR7Ù*
+ ´vR7!5
+ çyR7
+ R7+
+ ¥R7·K
+ ˆÔR7 ãR7«F
+ óîR7—G
+  ğR7†^ “üR7Ÿ:
+ îS7E
+ TS7¡6
+ i3S7Ù,
+ øCS7ˆs sXS73*
+ ãgS7K
+ JtS7Õ*
+ dzS7?
+ cS7ó
+ •ŒS7–o ÈS7e
+ rÔS7I5
+ ÕêS7ãK
+ fûS7w1
+ ìT7ß9
+ “T76b I*T7]9
+ b*T7‡-
+ ET7µF
+ TMT7¡7
+ ”OT7£9
+ ı¸T7cE
+ ÃÊT7kK
+ òÊT7[9
+ bØT7.v nîT7w
+ ÓõT7—
+ U7ĞW hU70
+ âU7o+
+ >*U7µ
+ Ê;U7-
+ ÀBU7õ
+ mVU7!'
+ WiU7U
+ oU7¯6
+ ÃrU7”} äU7M)
+ U—U7I*
+ ˜U7,
+ ³¥U7‰$
+ ¨¸U7Ù9
+ ²ÉU7Õ6
+ ĞU7ßI
+ ĞU7s
+ 2åU7“
+ ƒïU7Ï*
+ »öU7©>
+ V7½6
+ ³;V7¡H
+ µeV7­'
+ ²{V7ˆ` &V7?
+ ,™V7ñG
+ ªÚV7;!
+ UûV7AC
+ ãW7M!
+ –W79
+ _-W7æ 0W7œm ²9W7ƒ
+ §;W7ë
+ ADW7b XTW7•&
+ AvW73
+ /zW7û"
+ C{W7À{ Ê˜W7/A
+ v™W7f` ¸W73>
+ Z¼W7Á-
+ ë¾W7³=
+ ‘X7ë!
+ èX7ù
+ Ë¢X7C)
+ ¯°X7€ k¸X7Ç
+ |ÜX7é
+ péX7ºm ¾÷X7;B
+ çÿX7/A
+ GY75E
+ @sY7ÍG
+ ıwY7	2
+ šY7™0
+ 8ŸY7ŸB
+ ¦ÄY7øa ßÆY7s2
+ ¸İY7I
+ õY7WJ
+ úY7¯6
+ İşY7ÛH
+ cZ7x^ ;,Z7çE
+ XZ7A
+ 9\Z7÷
+ ^Z7KG
+ (`Z7‡9
+ ÂaZ7A
+ ÑiZ7ÁK
+ å„Z7ûB
+ 5Z7“*
+ ÁµZ7Ë
+ sÆZ7³F
+ ìZ7[@
+ 8+[7)<
+ ì?[7]<
+ bO[7t] p[7ë5
+ i—[7ÍA
+ 3¨[7¹9
+ ¿©[72
+ èø[7Ù<
+ –ş[7ÿ*
+ 1\7ïE
+ ä&\7Q9
+ ğ)\7H€ Á7\7xb ~X\7uF
+ Ğs\7£:
+ (®\7®i åº\7:
+ l¿\7a
+ ÑÂ\7_2
+ É\7K9
+ Õ\7¡)
+ få\7Ôa Åï\7Ë(
+ ò\7À] ]7ğa Á+]73,
+ /4]7#E
+ SA]7ñ
+ wE]7S
+ HX]7Ç6
+ vf]7¬^ 9]7•+
+ ´]7$x ã ^7ã=
+ ö4^7CJ
+ A^7t` ¡A^7ı<
+ .V^7.
+ £a^7¼c !œ^771
+ 9è^7­F
+ ²ò^77
+ @_7ÅK
+ º,_7hb †2_7|^ 'W_7D
+ ¤¸_7û7
+ ¿_7"
+  è_7S*
+ ?`7ıH
+ ˜,`7™B
+ ¬5`7 ‚ 8`7§
+ é=`7Ñ
+ ÛZ`7y-
+ £^`7+I
+ Ÿl`7Îq ws`7åH
+ z`7·'
+ HŸ`7ºk ¾`7&b Á`7çK
+ …Â`7_,
+ Ì`7s)
+ şĞ`7¯A
+ xÚ`7É
+ ©ë`7]3
+ -ñ`7Ç8
+ çñ`7ÅK
+ şö`7Á;
+ pø`7%G
+ Õa7&^ d"a7­
+ ?a7j ×fa7r n“a7q5
+ 3½a7½'
+ ·Ça7
+ B b7Ÿ9
+ gb7£ 
+ ßb7@ Ìb7|\ Ñb7B` O#b7	$
+ :5b7n| ŠLb7×2
+ ”Wb7!
+ ;ab7
+ Òkb7K:
+ ìˆb7u>
+ oŒb7*{ ,¦b7û,
+ à¶b7[5
+ ûêb7½9
+ ¡c7› 
+ ğc7ñI
+ å c7Ú` æ c7` 65c7M
+ WJc7V‚ ~Pc7/
+ çc7÷)
+ oªc7g1
+ ©®c7vi ÚÔc7ù
+ XÖc7ÑE
+ šÙc75K
+ Ûc7
+ )d7ó<
+ Od7;)
+ d7Ç.
+ d7!7
+ -d7	;
+ Ş2d7D
+ ¹;d7?
+ óbd7Q=
+ ô™d7±'
+ h¦d7b "Âd7ÏB
+ ºâd7†` äëd7ÙA
+ ^ùd7,
+ Ì3e7›
+ ì<e7İ.
+ uAe7ö_ ?Ke7z~ “|e7±6
+ åe7ù9
+ T±e7Ñ,
+ ì´e734
+ »¶e7ç;
+ ëÂe7oA
+ —Óe7$
+ bÚe7»9
+ ¢ f7.
+ 8!f7i=
+ 
+af7c=
+ Oaf7•@
+ cf7Âa %hf7‡
+ Õtf7³&
+ ¤›f74
+ »®f7À t¼f7=
+ ]×f7W/
+ UØf7õ
+ 
+öf7
+ ­g7K6
+ ûg7-D
+ µg7O
+ ©=g7ÂW ‡Kg7ü_ r€g7W6
+ âg7¹*
+ ^²g7 r Ağg7á!
+ ÿøg7èa 3h7ÅF
+ ÷h7ãD
+ *h7—F
+ Vh7å6
+ U›h7D
+ ¶£h7] EÌh7w
+ ˜êh7Á:
+ G÷h7¹
+ /ùh7-I
+ !ÿh7Ú| }i7ìa %=i7
+ ĞFi79*
+ ÅUi731
+ ¼Xi7ëF
+ R‹i7û
+ g‹i7S
+ ‘‘i7Í9
+ d–i79<
+ ñ˜i7™9
+ Ìªi7Ù
+ w¸i7ñ<
+ °Îi7ı#
+ şÔi7O1
+ ài7O2
+ “j7ËG
+ dj7
+ Ú^j7ûI
+ :Šj7=
+ ‘j7“;
+ •j7—J
+ –j7„s ¹j7ïH
+ nºj7‡#
+ Ùºj7/
+ ˆÎj7M5
+ •åj7ñ/
+ èj7
+ Ïéj7á
+ ‹k7Ù*
+ µk7'
+ İ!k7Ë<
+ S)k7é9
+ °[k7v^ £]k7x] ck7»8
+ _xk7ã0
+ Şk7Õ6
+ ©k7œp _´k7Å%
+ Zïk7§
+ –ók7W2
+ Æl70
+ Wl7…
+ éXl73/
+ ¬~l7ËF
+ A†l7w$
+ éˆl7JV ÇŠl70
+ j—l7£J
+ 7¤l7=
+ =µl7ÅE
+ _¶l7‘>
+ »Öl7A(
+ Éål7û
+ ül7Ôa !m7+
+ Wm7„n Ë!m7ó*
+ å0m7<
+ Om7Òa Um7O
+ Kgm7É
+ ¥m7w#
+ ––m7?
+ O¬m7
+ Tºm7¤_ ÎÀm7](
+ jÆm7»-
+ 	Şm7÷?
+ õm7Å$
+ „n7K7
+ Ün7s 
+ “*n7‚` 
+0n7
+W 1n7_,
+ tDn7+D
+ 0en7W;
+ Èfn7ÒY ˜un7½8
+ ß„n7'
+ Ï”n7§6
+ Ôën7_1
+ Wğn7ñ"
+ ¥o7Q6
+ Po7vh Ùo7?
+ ğ o7†s °(o7Ñ
+ e/o7-E
+ 9o79
+ ;o7ğ~ ivo7_<
+ ¥o7_1
+ –ˆo7w4
+ o79*
+ À’o7!:
+ ÿo7Šb à§o7Ã&
+ ÉÍo7í5
+ %p7³G
+ )p7ñ6
+ Ø<p7.Z /Ip7»?
+  Up71>
+ …qp7¿K
+ ªp7/
+ Ùp75
+ åõp7±A
+ mÿp7qH
+ ¶q7¥&
+ q7ÁK
+ q7¿;
+  /q7u
+ Ñ5q7O
+ &vq7ôc â}q7!;
+ –q7ï"
+ ¼£q7ı.
+ §»q7E
+ 1Æq7/*
+ 8íq7k1
+ 
+ïq7‰
+ óq7'*
+ Šúq7`` ¯r7{ |r7µB
+ ¼r7Æx ír7'
+ / r7ÕA
+ ’!r7'!
+ .%r7è_ &r7$o 
+Dr7Şf JTr7í>
+ ÚTr75
+ or7ƒ7
+ ;yr7¿&
+ Qr7K'
+ iŸr7g8
+ Ä«r70
+ xÿr7ÿ0
+ øs7c8
+ ²Ts74
+ ê^s7E4
+ 8xs7m@
+ S¨s7rh w­s7•G
+ øØs7¯
+ 6ès7ƒH
+ Íès7¹#
+ .t7	3
+ wt7ÿ
+ ¦t7Y2
+ ã!t7™J
+ ¹Kt7I#
+ „kt7U9
+ ùtt7WJ
+ ˆ„t7>u st7»*
+ £t7ë
+ ³ u79
+ |6u7a [{u7êp û}u7–z #€u7Ä€ a…u7)D
+ ÀŒu7—1
+ %»u75!
+ xÁu79%
+ ³Áu7Ù/
+ ËËu7ª} ¯Ìu7Ñ.
+ â×u7>u ‚ãu7éH
+ êæu7)H
+ ñu7{
+ ıu7ÁJ
+  v7]J
+ œ#v7‰
+ Û3v7]
+ ¯Lv7Y
+ jXv7C
+ ^`v7±
+ ovv72X 2zv7¿5
+ k{v7$‚ ç{v7½7
+ Ÿ£v7“
+ íÌv73A
+ ³év7‘
+ %ıv7ã*
+ ê/w7«!
+ °0w7` *5w7¿!
+ „;w7?"
+ Jw7“4
+ Òkw7•K
+ ğnw7C
+ .vw7-D
+ Ã‰w7#
+ x®w7IJ
+ ¦Áw7ÑJ
+ "Ğw7!1
+ $
+x7™(
+ éx7­ 
+ Ix7±9
+ }fx7m 
+ ¬gx7Í(
+ šnx7s)
+ ±“x7Ï'
+ ³¯x7¥ 
+  Ôx7>
+ İx7#!
+ 9õx7lq y7§E
+ Óy7)<
+ Çy7k*
+ .y7\d µ@y7÷#
+ ğvy7ŸF
+ ry7*
+ ¢y79
+ ‹¶y7D œÊy7
+ ²Îy7™(
+ Tßy7z` 2äy72
+ ¾éy7¿9
+ .ëy7	6
+ jz7¿K
+ ¡z7ãC
+ z7¼t í3z7r Å;z7}1
+ _Kz7¯)
+ ¾Lz7O1
+ Oz7O
+ Ufz7?
+ \jz7m;
+ wpz7W/
+ Ø|z7Å1
+ úz7’e ;¥z74y oÅz7å
+ ÊÈz7¹'
+ °×z7 V{7ƒ
+ t{7*
+ ("{7‡<
+ C'{7•*
+ uQ{7M
+ ]Z{7‘7
+ ux{7Ì „{7{6
+ É±{7»&
+ Ù¿{7ĞX ±×{7ƒ7
+ á{7‡%
+ wñ{7İ*
+ Gô{7±D
+ mü{7?
+ ¸,|7c/
+ Î?|7?.
+ @T|7§/
+ m|7=
+ ñ||7+
+ ÷•|7w
+ [¤|7¿?
+ š±|7<
+ ËÑ|7~ Ø|7İ;
+ àş|7{4
+ _}7G,
+ Ç}7¯
+ §}7{,
+ C}7¹A
+ 4}7eD
+ å=}7ƒ/
+ }c}7µ
+ üq}7vZ •}7}8
+ l†}71
+ êŒ}7G@
+ ¯}7	<
+ 3¬}7ÏI
+ u¬}7úa ÜÁ}7WE
+ Ï}7g-
+ §~7•*
+ ë~7”` ¦ ~7ïD
+ ¦4~7s)
+ ƒK~7ü ”O~77
+ SX~7ÅG
+ š^~7Îa út~7×,
+ }~7ş[ !‚~7.
+ #ƒ~7&b D™~7õ
+ š~7ßA
+ úš~7úY oÖ~7ƒ%
+  á~7—J
+ R47“>
+ îL7e5
+ æO7ÓK
+ ÿ7q$
+ ´†7x` Àª7Jq v±7Ó0
+ “»7¬k  €7b º€7ñ2
+ î'€7÷5
+ ==€7°T öK€7áG
+ ‹T€7vh .k€7•A
+ ¼q€7)
+ ˆ‰€7ÜU »¯€7…<
+ úè€7ë<
+ ë€7§B
+ ·ü€7IJ
+ Ö 7%<
+ ø7I
+ F+7ù
+ !.7‹$
+ Æ77á 
+ á;7S1
+ *V75@
+ «j7n 7U
+ •7D
+ Ğ¡7, è«7M
+ ó«7ç<
+ %½7A
+ Üö7+E
+ Q‚7rr `‚75
+ 7!‚7:l ‰Q‚70
+ oX‚7pc üg‚7E4
+ j‚73)
+ w‚7ÕK
+ ¬‚7q"
+ À‚7­)
+ ÔÊ‚7mF
+ 8ï‚7»*
+ éIƒ7Šn Œaƒ7É7
+ İ†ƒ7ÍD
+ ªŠƒ7ÃH
+ ±£ƒ7:o $„7›/
+ eN„79<
+ Æa„7¼m Ñe„7ÙA
+ ®n„7	*
+ ·o„7Äa  ‘„7‡C
+ £„7I
+ Pé„7ã>
+ Ô…7K
+ wg…7û
+ ©z…7ÙG
+ A{…7­B
+ %Œ…7é#
+ …7ÿ/
+ Wš…7…"
+ kÖ…7Àm #Ø…7O/
+ ,ä…7 | “ë…7ÕC
+ Šü…7` ÷*†7£?
+ ©:†7|` Y>†7ôn KM†7Ã6
+ ZR†7Ç
+ ş\†7©B
+ a†7ßA
+ ªh†7R} ºo†7°€ P†7èa ú¢†7ß$
+ p¥†7±G
+ L¦†7 b Å†7| öÍ†7i
+ ¾Õ†7±D
+ iÜ†7ÿ0
+ „>‡7r îC‡7¥B
+ lN‡7¹9
+ Úx‡7
+ ~‡7*
+ §’‡7)
+ Š ‡7A!
+ Ï¡‡7/=
+ ı‡7*
+ Òˆ7J
+ »#ˆ7²y @+ˆ7»1
+ ~Pˆ7Fw ¥cˆ7…G
+ Uhˆ7	
+ ¤”ˆ7[K
+ 4£ˆ7/#
+ }³ˆ7¯D
+ ú×ˆ7mA
+ ^åˆ7M@
+ Éşˆ71D
+ ­3‰7ñ
+ y?‰7#
+ R@‰7` wP‰7'D
+ ôQ‰7<
+ kj‰7f ã‰7Õ+
+ +™‰7¤c òÍ‰7%*
+ ëò‰7zs Šö‰7¹1
+ üı‰7¿.
+ ¶5Š75
+ kGŠ7¾a >gŠ7ÛI
+ œnŠ7q
+ K€Š7«J
+ ¦‹Š7é*
+ ˜©Š7C=
+ _±Š7³C
+ :ÌŠ7šf öÌŠ7×
+ çÎŠ7y
+ +åŠ7×K
+ FìŠ7o$
+ Ò‹7A
+ ²‹7í
+ +‹7¾] r‹7=/
+ a‹7à~ C‹‹71
+ ·¾‹7¿J
+ õÃ‹7¯.
+ Îß‹7:
+ Î Œ7£E
+ Œ7a Ä%Œ7ös ]/Œ7} ¨BŒ7`s ãMŒ7vr ƒRŒ7@
+ ”WŒ7A2
+ 7„Œ7.
+ ÁˆŒ7/
+ 	ŒŒ71
+ LŒ7Í6
+ sŒ7a
+ J¢Œ7£
+ ]¬Œ7&
+ Ë´Œ7ñ/
+ ’ÅŒ7ç%
+ JŞŒ7‹
+ ÜüŒ7	B
+  7-'
+ º"7—+
+ ÂA7_5
+ .F7Ë*
+ øV7Æ] ´c7=;
+ f–7É
+ ˜7'
+ }¢71?
+ 4¨7"r Ò¨7?J
+ `¶7<
+ ö¶7Å/
+ G¹7o.
+ gÑ7ı:
+ Bø7J
+ ı7xr ñ7­ 
+ ‰7ï
+ ‘7€ \:7E4
+ C<7m1
+ ¶K7kG
+ êT7W=
+ cˆ7á
+ ¤µ7Ny ã7EC
+ ‘ì7±6
+ i7ã@
+ N73=
+ 7Ë
+ v7¶` •*7!5
+ M7ñ2
+ 7½;
+ „Û7»J
+ 757;
+ }F7•@
+ $_7K"
+ ?a7"
+ Pe7pr I~7&o £¿7 b Zì7†Y uú7'"
+ úş7±J
+ ‘7±9
+ t‘7+
+ Ã‘7D
+ O‘7	6
+ p3‘7Û3
+ üI‘76
+ ¢S‘7œk T‘7»=
+ Cl‘7šW bµ‘7=
+ M¿‘7D
+ â‘7
+ ™û‘7¸T §’7i)
+ 
+’7Z` `’7i>
+ ®#’7á@
+ Ù-’7e3
+  e’7¢e f’7ã>
+ öj’7K
+ |’7‚ …¹’7şS ~Å’7ƒ%
+ ÁÕ’7E3
+ æ’7y)
+ Ô!“7‘7
+ ¨8“7í
+ ë‚“7
+ «“7É7
+ ¹“7ç;
+ mº“7ù,
+ ¿¿“7{;
+ BÉ“7Ï'
+ ê“70_ ş“7§=
+ 2ÿ“7¯9
+ {”7×.
+ :”7O/
+ A”7£6
+ é)”7g8
+ |M”7ùG
+ nP”7•D
+ Ç‚”7$` ”7#!
+ [—”7{/
+ e—”7e
+ ¹¬”7ï
+ —ú”7£6
+ Íû”7}6
+ şı”7 [ Ş1•7ßC
+ N•7MJ
+ 0l•7‡?
+ #ˆ•7Îp "‰•7l| +§•7{%
+ .§•7/E
+ _¬•7w<
+ í¼•7q%
+ ¾Â•7…;
+ ãÂ•7±9
+ ÇÆ•7ï
+ c–7b !–7×>
+ 
+}–7í@
+ a~–7-
+ ¯‚–7ŸK
+ YĞ–7]/
+ tì–7 ` ğ–7u4
+ è—7Nq Õi—75
+ Úm—7+
+ Ïs—7(
+ µw—74
+ Üw—7ç
+ «—7-*
+ % —7A
+ î°—7jZ íû—7A/
+ …
+˜7ß,
+ W'˜7Û.
+ ß1˜7OB
+ ¥M˜7LW ÒQ˜7Ìa V˜7<
+ .Ë˜7ßK
+ 3Ó˜7ã'
+ ¶Ö˜7ã1
+ –õ˜7ñK
+ '™7kK
+ Å™7:b ±5™7g8
+ ú`™7Ó5
+ U¢™7WJ
+ ÿ°™7£ 
+ V²™7¿J
+ Î´™7Î~ …¸™7%D
+ Ì™7Ü {í™7f} è÷™7„b u1š7‘%
+ ëEš7ñ@
+ uSš7S 
+ ~š7‚ é˜š7µ(
+ Cš7i*
+ ªš73A
+ {Úš7w
+ _çš7wG
+ Î›7Ñ
+ =›7—F
+ PG›7s2
+ ¥L›7³>
+ wV›7ÕG
+ ¼X›7¦l 2c›7Ps o›7·#
+ s›7{ 
+ Ï{›71)
+ ›71K
+ g«›7ñ
+ æ­›7A
+ V¯›7_2
+ ¢é›7Äa kğ›7OB
+ Æü›7A
+ ıœ7Q1
+ Cœ7ïH
+ °œ7Y<
+ 1Cœ7SA
+ œRœ7	6
+ ènœ7—3
+ kœ7Ï6
+ zœ7¤c ³’œ7Ã"
+ #•œ7¡G
+ ¯¦œ7x~ ]æœ7»>
+ dìœ7£1
+ íùœ7G
+ 7AI
+ ^7Ã9
+ 7à{ F'7
+‚ Ì37³K
+ #87›J
+ ‡J7•@
+ ƒK731
+ 5s7D
+ «s7û
+ 7ç 
+ àÂ7…;
+ ê7Å*
+ í%7´_ °C7~ ÛH7
+ ˜‘7öw ¡7½F
+ «²7«<
+ o·7ëD
+ ÚÇ7q'
+ [Ë7-
+ `×75
+ ›é7.{ Qô7‡
+ •Ÿ7|f u@Ÿ7` gŸ7®} ÒŸ7õK
+ .åŸ7i1
+ ¡÷Ÿ7£6
+ YıŸ7!5
+ z 7i*
+ * 7?J
+ ı4 76y ­A 7u@
+ iF 7‰
+ ïI 7É
+ T 7×"
+ ªq 7ƒ'
+ “r 7á!
+ ƒ} 7
+ :€ 7
+ D 7­9
+ `‚ 7ó
+ Â 7"
+ ¿º 71
+ ªÊ 77
+ æô 7îr !!¡7!8
+ z3¡7"l ™:¡7ìa Rb¡7íB
+ ;c¡7i*
+ cm¡7"v µŒ¡7U8
+ éª¡77*
+ Ç«¡7_#
+ ¼	¢7[
+ ¢7·H
+ n¢7)5
+ :%¢7‚ R1¢7ß*
+ ğQ¢7ËB
+ ‚Y¢7ß
+ ¨Y¢7n :Z¢7%8
+ ä\¢7g-
+ Äk¢7N` {y¢7á)
+ ?¢7q4
+ µ¢7­)
+ ®¿¢7D
+ ¡Ä¢7¥
+ nÇ¢7*
+ ÂÉ¢7QK
+ 7Ö¢7™K
+ ğê¢7K7
+ ë¢7pp 5£7­,
+ £7+/
+ £7å7
+ ¿£7ñ
+ '£7"
+ 8£7±*
+ à'£7%
+ I£7³-
+ cP£7Êa xn£7ÇB
+ ƒ…£7]F
+ Õ‹£7ç@
+ ±Ÿ£7Û:
+ IØ£7@
+ ”İ£7¿9
+ êñ£73>
+ ó£7‹!
+ t¤7uF
+ ¤7‚` ,#¤7é@
+ %$¤7ßF
+ ı/¤7E
+ ¢4¤7É;
+ yJ¤7­,
+ O¤72
+ 1†¤7_B
+ U“¤7E'
+ ¡°¤7³,
+ QË¤7­H
+ 6Û¤7…8
+  æ¤7
+ ˜ê¤7A
+ ë¤7Å9
+ A¥7U2
+ .!¥7½K
+ ³$¥7I#
+ ã*¥7di ãC¥7ëF
+ ¯W¥7P` i¥7A
+ ›¥7ìc ª¥7]3
+ s±¥7<d 
+ë¥7˜m ºø¥7W1
+ È¦7û>
+ µ1¦7d ×Z¦7£7
+ ™¦7æd ¤š¦7ÇD
+ šŸ¦7.} ]Ù¦7†` dä¦7#
+ Jç¦7‚s Wí¦7Ñ
+ âù¦7å<
+ —§7ph §7ä{ v*§7GF
+ m4§7c 
+ ûU§7¡A
+ '_§7õ)
+ —p§7³
+ ßq§7ˆ` ‹{§7D
+ .}§7F
+ ]Š§7ë+
+ b©§7=J
+ ÙÔ§7íG
+ •Õ§7Å'
+ &Ø§7ûB
+ (ç§7M>
+ Yì§7}
+ oñ§7Üm cö§7ù
+ ğ÷§7k 
+ ¨7C1
+ ş$¨7í2
+ &G¨7:
+ r¨73*
+ 8€¨78
+ Š…¨73#
+ ˆŠ¨7ƒ9
+ Ÿ¨7_9
+ Å­¨7ÿ>
+ ÷±¨7µJ
+ Ø´¨7_2
+ ¦Í¨7kK
+ åÎ¨7Í
+ —Ğ¨7‘A
+ Ö¨7Ë:
+ á¨7°T U/©7E
+ `0©7G
+ 4©7Á1
+ s©7.
+ z©7#*
+ ©7u)
+ “µ©7ƒ
+ èÌ©7šb 7Ñ©7'*
+ K×©7%D
+ ‡í©7jh jª7s
+ v#ª7*
+ C-ª7ÅJ
+ Cª7Ç5
+ Iª75>
+ àZª7t Ípª7EB
+ £¥ª73
+ °Õª7A
+ åª7“A
+ „èª7”e 3«78
+ !4«7Ò^ v>«7?
+ aG«7/
+ R«7×!
+ tW«7D
+ ü«7¹
+ †‹«7£J
+ É«7YB
+ ×«7û/
+ Aè«7ƒ
+ 9í«7>
+ äù«7,
+ 
+ ¬7b ¬7½
+ T¬7á>
+ ä¬7A
+ ¬7	I
+ v%¬73*
+ m)¬7‚s g*¬7/8
+ ÅM¬7ñ5
+ Be¬76q õx¬7É
+ Šƒ¬7"
+ =‹¬7K
+ ¾¬7Í!
+ ã¬7Rq œì¬7©F
+ í
+­7%7
+ Û­7½6
+ ­7»:
+ Ü­7Şg !­7·/
+ /"­7)
+ a"­7ÿ4
+ –Y­7>
+ ğ|­73+
+ „­7_B
+ z‡­7‹ 
+ :“­7/
+ K¬­7Í
+ ]³­7ªe Ä­7Q+
+ Ş­7Ë*
+ {â­7Á'
+ ¾®7ç+
+ ö$®7)<
+ •4®7ë1
+ HP®7«(
+ -U®7b •®7)5
+ U•®7~~ ¨®7"l Û´®71@
+ ¦µ®7
+ 'Ó®7›&
+ Yò®7—
+ ß¯7G
+ ÅC¯7@
+ J¯7˜i [“¯7ëK
+ _š¯7A&
+ ¶ ¯7|h À·¯7æc cÔ¯7E*
+  Ú¯7[H
+ ö°77
+ 5°7x` °77
+ ¶.°7³'
+ MC°70U šh°7ï/
+ ‹€°7ps è®°7C
+ ñİ°7é8
+ W±7Ë
+ ØT±7M8
+ ›y±7r B±7Õ:
+ ó¥±7I
+ ·±7:
+ °Ñ±7z` ë±78
+ @²778
+ ²7ü^ ¡²7¿*
+ ï4²7&
+ <R²7½'
+ Ã~²7?>
+ ™—²7i$
+ uÀ²7šb &Ä²70
+ iÇ²7ñ/
+ –Ï²7/8
+ ğ³7Jt ³7³C
+ S'³7±'
+ zE³7Y>
+ H_³7í
+ Ä„³77
+ TŒ³7K
+ Ú¤³72q ³³73
+ ní³7·I
+ Sö³75@
+ ´7Ş{ ò´7?5
+ 	3´7
+ pG´7oE
+ K´7]3
+ ùi´7‘E
+ (j´7#4
+ ‘k´7+(
+ 7l´7»2
+ F“´7g'
+ [á´7B
+ Íá´7_@
+ =â´7[5
+ dò´7e$
+ xµ7İ/
+ ;µ7‚b  ¶µ7Å'
+ ÕÕµ7a+
+ 4Şµ7Õ(
+ 	¶7W0
+ ß¶7I
+ ¶7aE
+ ªP¶7s4
+ ¥U¶7/E
+ €¶7IJ
+ Ñ‚¶7^c '’¶7Q
+ 0¶7›8
+ õË¶7D
+ Í¶74
+ °Û¶7#+
+ ÷ß¶7É"
+ +·7í
+ T	·7#3
+ !·7?
+ »·7a 
+ ø5·71*
+ P·7ÛI
+ ë_·7-
+ ªu·7ëE
+ E‰·7¾x Â˜·7\i h°·75
+ }º·7%
+ }Æ·7m%
+ ßÚ·7ğ_ Ä3¸7^p é]¸7µ'
+ ÿe¸7‡+
+ ª¸7§E
+ ×Œ¸7Q
+ R˜¸7G3
+ U™¸7ùA
+ ôó¸7å#
+  
+¹7}9
+ )¹7s
+ '¹7õ
+ å¹7y/
+ ›5¹7é*
+ ã6¹7T 2N¹7Dp ¡[¹7a5
+ i`¹7¬k 0ƒ¹7Í7
+ l‹¹7oG
+ ˆ™¹7uF
+ ¿¸¹7| çÅ¹7w
+ ¥à¹7C
+ ´à¹7Ë<
+ $â¹7*
+ öí¹7Š^ tñ¹7×:
+ ¨ş¹7Ñ6
+ ôº7”` òº7S
+ º7¼{ 2<º771
+ ‚\º7k2
+ Xoº7ñG
+ —„º7ø} $‰º7s)
+ rº7|z àËº7¹(
+ ×º7÷/
+ –İº7áK
+ ßşº7‰PNG
+
+   IHDR   x   x   ¶¡…   	pHYs     šœ  
+OiCCPPhotoshop ICC profile  xÚSgTSé=÷ŞôBKˆ€”KoR RB‹€‘&*!	Jˆ!¡ÙQÁEEÈ ˆ€ŒQ,Š
+Øä!¢ƒ£ˆŠÊûá{£kÖ¼÷æÍşµ×>ç¬ó³ÏÀ–H3Q5€©BàƒÇÄÆáä.@
+$p ³d!sı# ø~<<+"À¾ xÓ ÀM›À0‡ÿêB™\€„Àt‘8K€ @zB¦ @F€˜&S   `Ëcbã P- `'æÓ €ø™{ [”! ‘  eˆD h; ¬ÏVŠE X0 fKÄ9 Ø- 0IWfH °· ÀÎ²  0Qˆ…) { `È##x „™ FòW<ñ+®ç*  x™²<¹$9E[-qWW.(ÎI+6aaš@.Ây™24àóÌ   ‘àƒóıxÎ®ÎÎ6¶_-ê¿ÿ"bbãşåÏ«p@  át~Ñş,/³€;€mş¢%îh^ u÷‹f²@µ  éÚWópø~<<E¡¹ÙÙåääØJÄB[aÊW}şgÂ_ÀWılù~<ü÷õà¾â$2]GøàÂÌôL¥Ï’	„bÜæGü·ÿüÓ"ÄIb¹X*ãQqDšŒó2¥"‰B’)Å%Òÿdâß,û>ß5 °j>{‘-¨]cöK'XtÀâ÷  ò»oÁÔ(€hƒáÏwÿï?ıG % €fI’q  ^D$.TÊ³?Ç  D *°AôÁ,ÀÁÜÁü`6„B$ÄÂBB
+d€r`)¬‚B(†Í°*`/Ô@4ÀQh†“p.ÂU¸=púaÁ(¼	AÈa!ÚˆbŠX#™…ø!ÁH‹$ ÉˆQ"K‘5H1RŠT UHò=r9‡\Fº‘;È 2‚ü†¼G1”²Q=ÔµC¹¨7„F¢Ğdt1š ›Ğr´=Œ6¡çĞ«hÚ>CÇ0Àè3Äl0.ÆÃB±8,	“cË±"¬«Æ°V¬»‰õcÏ±wEÀ	6wB aAHXLXNØH¨ $4Ú	7	„QÂ'"“¨K´&ºùÄb21‡XH,#Ö/{ˆCÄ7$‰C2'¹I±¤TÒÒFÒnR#é,©›4H#“ÉÚdk²9”, +È…ääÃä3ää!ò[
+b@q¤øSâ(RÊjJåå4åe˜2AU£šRİ¨¡T5ZB­¡¶R¯Q‡¨4uš9ÍƒIK¥­¢•Óhh÷i¯ètºİ•N—ĞWÒËéGè—èôw†ƒÇˆg(›gw¯˜L¦Ó‹ÇT071ë˜ç™™oUX*¶*|‘Ê
+•J•&•*/T©ª¦ªŞªUóUËT©^S}®FU3Sã©	Ô–«UªPëSSg©;¨‡ªg¨oT?¤~Yı‰YÃLÃOC¤Q ±_ã¼Æ c³x,!k«†u5Ä&±ÍÙ|v*»˜ı»‹=ª©¡9C3J3W³Ró”f?ã˜qøœtN	ç(§—ó~ŠŞï)â)¦4L¹1e\kª–—–X«H«Q«Gë½6®í§¦½E»YûAÇJ'\'GgÎçSÙSİ§
+§M=:õ®.ªk¥¡»Dw¿n§î˜¾^€Lo§Şy½çú}/ıTımú§õGX³$ÛÎ<Å5qo</ÇÛñQC]Ã@C¥a•a—á„‘¹Ñ<£ÕFFŒiÆ\ã$ãmÆmÆ£&&!&KMêMîšRM¹¦)¦;L;LÇÍÌÍ¢ÍÖ™5›=1×2ç›ç›×›ß·`ZxZ,¶¨¶¸eI²äZ¦Yî¶¼n…Z9Y¥XUZ]³F­­%Ö»­»§§¹N“N«ÖgÃ°ñ¶É¶©·°åØÛ®¶m¶}agbg·Å®Ãî“½“}º}ı=‡Ù«Z~s´r:V:ŞšÎœî?}Åô–é/gXÏÏØ3ã¶Ë)ÄiS›ÓGgg¹sƒóˆ‹‰K‚Ë.—>.›ÆİÈ½äJtõq]ázÒõ›³›Âí¨Û¯î6îiî‡ÜŸÌ4Ÿ)Y3sĞÃÈCàQåÑ?Ÿ•0kß¬~OCOgµç#/c/‘W­×°·¥wª÷aï>ö>rŸã>ã<7Ş2ŞY_Ì7À·È·ËOÃo_…ßC#ÿdÿzÿÑ §€%g‰A[ûøz|!¿?:Ûeö²ÙíAŒ ¹AA‚­‚åÁ­!hÈì­!÷ç˜Î‘Îi…P~èÖĞaæa‹Ã~'…‡…W†?pˆXÑ1—5wÑÜCsßDúD–DŞ›g1O9¯-J5*>ª.j<Ú7º4º?Æ.fYÌÕXXIlK9.*®6nl¾ßüíó‡ââã{˜/È]py¡ÎÂô…§©.,:–@LˆN8”ğA*¨Œ%òw%
+yÂÂg"/Ñ6ÑˆØC\*NòH*Mz’ì‘¼5y$Å3¥,å¹„'©¼LLİ›:šv m2=:½1ƒ’‘qBª!M“¶gêgæfvË¬e…²şÅn‹·/•Ék³¬Y-
+¶B¦èTZ(×*²geWf¿Í‰Ê9–«+ÍíÌ³ÊÛ7œïŸÿíÂá’¶¥†KW-Xæ½¬j9²<qyÛ
+ã+†V¬<¸Š¶*mÕO«íW—®~½&zMk^ÁÊ‚ÁµkëU
+å…}ëÜ×í]OX/Yßµaú†>‰Š®Û—Ø(Üxå‡oÊ¿™Ü”´©«Ä¹dÏfÒféæŞ-[–ª—æ—nÙÚ´ßV´íõöEÛ/—Í(Û»ƒ¶C¹£¿<¸¼e§ÉÎÍ;?T¤TôTúT6îÒİµa×ønÑî{¼ö4ìÕÛ[¼÷ı>É¾ÛUUMÕfÕeûIû³÷?®‰ªéø–ûm]­NmqíÇÒı#¶×¹ÔÕÒ=TRÖ+ëGÇ¾şïw-6UœÆâ#pDyäé÷	ß÷:ÚvŒ{¬áÓvg/jBšòšF›Sšû[b[ºOÌ>ÑÖêŞzüGÛœ4<YyJóTÉiÚé‚Ó“gòÏŒ•}~.ùÜ`Û¢¶{çcÎßjoïºtáÒEÿ‹ç;¼;Î\ò¸tò²ÛåW¸Wš¯:_mêtê<ş“ÓOÇ»œ»š®¹\k¹îz½µ{f÷é7Îİô½yñÿÖÕ9=İ½ózo÷Å÷õßİ~r'ıÎË»Ùw'î­¼O¼_ô@íAÙCİ‡Õ?[şÜØïÜjÀw óÑÜG÷…ƒÏş‘õC™Ë††ë8>99â?rıéü§CÏdÏ&ş¢şË®/~øÕë×ÎÑ˜Ñ¡—ò—“¿m|¥ıêÀë¯ÛÆÂÆ¾Éx31^ôVûíÁwÜwï£ßOä| (ÿhù±õSĞ§û“““ÿ˜óüc3-Û    cHRM  z%  €ƒ  ùÿ  €é  u0  ê`  :˜  o’_ÅF  $vIDATxÚì}wœUÕµÿZ{ŸrÏ=÷NoÀ0¤w¤3ŒKXŞSô	¶Ø£/–_,1Ö¨`b,‰) –h‚¢H›¡( u(3€Lcúm§ì½~œá:¨ ˜'“YŸóÇœ]NùÎ:kW9ç"A›üğÂÚ hºè6iºè6 Û¤è6 Û¤è6 Û€n“6 Û€n“6 Û€şÏåt¿Š4X%Û¶nªŞº£~ÏşĞ¡*µ¹¦ø;d%÷ìš2xPÒ ázVÎÿùuâiø—¡ÆğºUe.;´f}Ã¾
+pKPcŒ@H5ÉèpÁäœË¯ğçõmúÄ$\ôéº;~YWzˆÔ Î€1@LAd€ A8$•uüé9gß¤¦vlúxeçÍ7/ù—&0Æ+Àd
+ ÆÁÃ!zöH‚#_vJ¯GÒûo³ÑÇa4"áê-›UAaÀà*2¸L¦zp3 Gp  Éº Ş¶Ä¶n–Uª Jb¸L%®Sh4'd Í4šlWËíxHI Píúï¤&§Ì:»èo”º5+ÑEEC¦¢÷×¡	e•PT 8 ÿ
+h€–‹]{2-Árê·T/ùbsí°«§ö½¬CBÏã?{iÙŞ/ì6¤}R·V4Qí†"&IÑ™¢÷÷‘â®×	t@PP¿4	Rævè3•¨[im&Èe+‹ö­–3rl·³;§ö÷©æ1ÏéçËÊ’õ;
+?\ÿñÚ›úOÉLÊnå@;4ìÚ¡*¨è ÀR|Àub è#Ô4 @àÔ´’A2Ëî§ë¢¸ösâ®®‘¦0ÛëÊW­Ü³*İ—Ñ5­{§Ô¼3Cç~!eC¸¡¢¦b×İ[öìÚ¹¿Äb*ó%©éÉAbáÆ°4[-ĞáëdÌU4ä>à)(>b~@? ŸÀ h*ÀÀcD€ş<%5WÓDiÃzà–¡‘+ˆ1äuë£U+V,ÛµÂI;F¶%,‹lG:.¹d@e€#’”t=KqË±Lh½@×¯[Í¸Şd11Ğ4	 ƒP§#MxÄt KÊ¨.U6ˆŒ	]îJÆ‘ 2äªFVŒY1R,¦X¤XÒ²¤mIÇ‘®  HMÖÒ”MÕZ­é X¬aûÄ} èÀubş#(› ~BP§–¦$sØùLEµÊ÷*:W…ÆP0t	Q"0  B)Q¨$
+Ò%ÁQ((\Q’¢²Ô€‘¦çš¦¡(J«:¶c[¬üK®×ëÀŒ#Ã0	ı„¡šLÀ	  ¤Í¬JFOE%u…ª¦è¶æ¢dˆ."!HDH„RI”‚	)]ŠŠB¢ãB0¨¤ê)©Fû@b 5Ó»ğŸ‘Lc\æ-€~?€ŸÀï-ÉG¨» HP `ÔfIƒõÄT`•U±íJ×IÁ"0€ˆˆ(HŠKÂEUA!s€ŒT_º–ĞNÔnœV@Õ­üCÆ5`0ÀGàğúBƒÀèsA“ g:<Gœ…t%cWİºh¥jH†ŠÆ‰¡‹GØC$%1!A¨¨
+”‚„‹®\ w‘3Ôu–àËôuö›†Ïçkµ@;e‡Â%Å‰©ÈTBPĞô&¸Á'Áç‚.@T	 Nˆ Üá²³Şnb´¤f½ßp¤€tÄ?'’äI*ÿÊFs‡\œ#2&¨ù³'ÂêN? c;·º!Î¦ ª *€ä#ôú%š~|T@•PP$ràÚ\àKË,t qcb¦N!ºqW†$—’„R(¤Jpt9*œ8GÎ‰s@„`@Iæ™)´`B°5]¿r	†* ¦
+Æf»X+0„È T	¦M™9ŒR8(È €j¦&É|4€Ò `ŠÂô0"D$ˆs¦*Ìrqæ‹œ#W€sä¹‚¦¦vNìeúMÓl½-jªkW}„$uÕ`4	üİÀÌ…´HFÍÇlj`Ë>út«LÚ#B0D	N5:éˆØ¾êÉ‰É™Ê $ EJÉ™äÄ9ãœ1Î$cäAÌ8ğ#AWÃàfæ$uñ›c¬Õı¬H§j##zŒqz`İú(Ú+Sóé
+çœ3†¡”²ºŞı|‹½ò÷“wè¼r,¹3Ô—Õ%*wT~”c:ÒV!—(ãœ8—Œ#cŒq&9#Îš<FÆˆ1 ÃPR”Ì´„ŒïÁ7N' õî½ü×>ÔØ¾›šİÎğé
+1EF"RÕPá`hÌĞ«
+´K¥èÜ	ÖÆkÃ‹æÅ>~I›<}èDc‚×p’rÎHgL0ÉÆ7è2ˆÀ!IÖ0Ğ¥½ÙÉ4ü` 5­vÌ&¦Ö—UU”Yµ¡He½UÖ«‰9ÄÀğ«~Sõ›zJŠ?'5˜—l¶ê*c|PÿÀçÂoOÑ;÷’$*÷¦§¤"CHŒ!C`ˆ^–‘!""2D„¦¬2`ˆˆ¤¨ÌzÇ¤Îş€_UÕV4íŞWûÙ¦ƒ«??¸¿>æjÌLÔ‚A-àW~ÅôA@¿*7Z[ë~ÖÚáÓs’Í.É³Àùç@Ì	m«\–Õ!QJ@Œ<@±¹0D†ˆ„@è¥HÓyŠ’Ô!¥cbbbküZ¸ïÁ'WHSQ’t- †ªéœsdACDdŒé}œT²ªDÔ¶;§$$ê*"úÔÀ-°bóúñ£r3“S¢–!›ò·qAZ8Ç `ğc¶¯}J0å{Û8-
+hÖo+cIºP8gHÇĞ{¯İëd$];v°¦nOe½×}×Oï1àÁO>´Ş[¹±.R£iÈ95;ñ_)ÈU ´b‘úº’hn°¯05Mkµ9[‹«IH$@DGÂD¿á‘aMí$	%"TÔ„z´Ï"ä4058¬÷€Á=^x¿ğ_«V,aÁ=²õ”CUJ—‚Ò–Ò•nc£¬­á*ÅtÛL2¼ÿ¨éYş€ïdnäÇtÉÁšÊÃ’@É&pI	IBJ!I
+B
+IB— ¹B’„ŒD¿«¬+ı­‘ÒÛHÇõ¬sGåŸ32ËŞİ›ö­)İ_ìP­ƒ!—¸-¸eÒNÔ()]m×7˜›×­g§v]‚—$}>=))ØšŞº«Â¹È<&"’¼Íƒµ	b!]A®”ŠdBJ&™ëJ¿ªj¢v­«¶‚UÿšOéäãjf¿¼.ıòº@CXÔ‡#ÑˆBaª®¦a¨PDp¹S½Îİ¿;}È=x’7ò£šˆ>ßV!luîY$¥’„hÚ!A Ç•#9ŸˆYn‡ôD pc_ò`–.ù“BîÁpİ<2|ú ÕèÉ”`Ğ]#©p¥k	ç°©qö95[İªB¬ı"dæ¦²‹Nş^~Ô@®	ï©•Brb^„¨°Û¤ÅÒÌq¤­HÅœ#càq	×Y)	Â®5nÄÌ4)¢ ’P#5=&ë­Ø›P_Ï`2 ¤ƒä4S&(¾Da.ùt“’ünbŸÃu2c†ÑzmtqÉáÆÚX\—A’‚„K® GâJÅ‘6
+GÎ¡ğh™+˜É•¿b…g·‚ƒHÄ€@ Ù.(*r?Pˆä—(P†D˜lDhË‘õ up•˜0…//’)	nkÖè­;+¬°@I‚‘$˜+¤ëJ×G…Î‘;‚±&ƒ ˆÜNYA v-\
+È@R(†CŠ"YH.!xLOK#²¹
+s1Æ“˜ÑYáŠá÷·Z mÇıb[•k¹ÜÇIHàˆG°.:P¸lCDáy-–’@R»”D’N,´›ÉRÔ!	 À²PZRd)
+Ò²QFbà
+°%9•Y\ÏöùÔï±;=€>T^¿ot%Ì3 $¹’8G‡!ç‚1@†ãõ$%Ù.¦ú´ôä€kUYE<` ¨@Á²l¤P”Qd!Æ(
+á‚%¤Edkà #uÇèìSR‚ÿÉßÎèíÅášH"Aäp	Ñ•’#p†¶-" ğ¼fO—…$@è™¨)`EÃÄ ÌBé WÉ²bM6,”Q 0H,WZllm° ˆf7†ºßßz&€M›Ëb6*H‚È•À™$DdH	ÑE´PĞ"H¤$WÂ0'-¤°#¥ªÉAÔ²&'ÒÚ²‘l ÉBŠ"…@FÁq(æR)æ›ƒMóåêºú½#v§ĞuuáÛª\ÛU˜BBJ“Ä™Ç«yA†à6yå@M.g®lĞ:¤%ÙV}´~µš$¤	†x¦Ãrea ØE\õPVÁ)4Ë×AÕÚ™~ß)¹£)Ğ¥_ÖT—‡½*P „ z%Ït	\)™ÜD¹¹)I	†°ê¤µeJ'4€‡õ”)ÒÛ¥¨+£DQÄ|`1°ÈBCš]¦éoÍ@ï,®j¬! 	„F I…“†ŒIæF];d	†Š¡útTK’ärTÖ%3 ¥vâ«7‚ä‰ 0<È°ÁuÁ2õAÔ#Yb	‰hä©ªö=J8N mÇılÓ¡OÓÌD™îËÉò·Ïğ§§AS×5E„£¢¼2Z\Ò°sCUUÄHõAÍêìë˜èÚ±†ÏU_D‚â-– <’G.	® ˜ K’ÅÈòAL‹S!Æ¤`Q&×:š††_Y·. «kBu¡~ƒûõLî–›–jè>®jº¦ëºîS•sÏ9!á¸5µ‘Âõ‡şñéÒÒˆ–êïÔ-91ÁDÛËÍ„*)#Gbî^8U‚$p%Ù’I’­­ƒ¥xºƒ(Ùšaùs|ü¤"ı§Ğ™é	¿˜sf(T®êÜç$$$A]×9çGNI9¹í¦Lì¶ä½í¯ÿ«$/Íä
+g(˜Ø$ë0^‹'ãŞr¨’£ƒ­€ÍÀF²XHÃ˜ˆ`tÒ|“ŒoüØfŒåä¦×ÔğÄÄÄïä°œsƒûöş+¯H<sT'ÎQ
+ËíÕd£¬³€©M¥DA(ä*àm#ÑAò°¶€l Á£ş¦ç†!„Ø³gONNa­s1Ôu½]»v'8Åèİ«s(ÓûğŞ·í’Æ„@ e3G É@x’‹à"8H’ƒ`#9	U³Œ@×p¸¡´tïòåçO<lØĞ“4Ö§ı»àÍƒÀHí~ûæbV¿ÿÍ´äCÓÀmrY€d“‡.‚‹M”Út%¸ "‰ŒŒlEMNJô——•ed¤Ÿ| NßwÁ¿S#¶®ÿÙç®L6êü\a®
+ÉÅ&>-šÒceExˆgºÉC|].HHïÚ½[^(ª­­MKK;yÓ­øk»ãÖÔ6Tîı,zè#)Òñ€4)Ğ% ºÄl©Zè·y–ktgI•Ô¾ÜŸ¦0j—•~*Ÿ¶VÿYcÛv#u5µ¡êınøKi•“Û@ÂA¦2_óe0:ÓMEå~]ML&$$œè+*­èÆPÈuÓüîŠ"ŠYV,fÇlÇq„$rP9Ó5Õçó†qLyŠâdÇ!ÕÕÕ555ã³×uİšššP(ü-½ÕÕÕBˆùóœáOV®ZE§H.™1£}vÇ%K–Ò^èó/üIûìÏ<ûì1{çÏ_Ğ>»ã”‚³„G÷şş…Úgwœœ?%
+wè˜c˜iÓ§Ÿª«ÏŸR`˜E¯¿şãú¸ˆË°¡Ckkkß{ïÇì]úÎ;µµµ«×¬Ù»oßÑ½ïğÏÚÚÚ½zš¦ÿ¦o2dğÿ\}õ)s·Åsp~üVî¸.1òd Ø´iÓáÃ‡[tÕÖÖnØ° „………GÛĞÏ>û &Oš wıüÎ<eÊøÏ“ãºoß>ÙÙÙë×ohÑµ~ıúÚÚZÏ‹ûä“-z·lÙRYY™––6vÌøÏ–ãÚï÷; >üè£]ÿü×2 ¸dÚ4UUW®ZiYVóŞO?]	 gœœ ¶mG£Q!ÄâeG£Q×m*™(Ş½»°°hûñ-Ä²¬mÛ¶íÜµ+¾’Ó
+¿o_IQÑºuëÖ8p yW4F£GOBD£Ñ£F#‘H|÷ÀEEë6lØPUUuêY½şÆ†6bdóÏuİƒ'&§ïŞİÀ@Ã|öÙgÍg}Î¹†xùåW¼İÛn¿£wß¾ï¼ó®·{ó-·öîÛ÷í·ßÙ¾cÇØñã3àm£ÇŒ]³vm‹xqş|ïŞ6~âÄmÛ¶]4mšaŞX¼8>LJùâüù#GŸLLšzŞùŸ®\éxàÁ{÷í;wŞ¼Ç¿òªYÍ¯Í“¢¢u½ûö½jÖÕD´mûöŸ\|q !Ñ;lzFæK/½|ŠY:t(5=#˜˜´«¸8Ş¸mÛ6ÃŒ?ˆfÏ™c˜æ7pøğáÌ¬vÍ§Ìüé¥†øó_şâíN›>İ07İ|sn—¼ÁC‡İu÷ÿşìæ[:uîb˜r<?Ô7İäİŞ…]|Ï½÷^wıõYí;ävÉ4xHs Ç¹òªYŞÈ~rÑ=÷Ş{Ûíw>Â0‰É)-"¢¿½õ–a&LœÔâî’SÓ30çºëš·?ü«G3ğÔo®®®ÎëÖİ0ã&L¸çŞ{vó-}ÏèwË­·z ‰¨à¬³›«'ıîùç3ğĞÃÑ¢×_7ÌÀ¹SÏ‹÷~ğÁ-‚+şë¿3àİ0ıôÒË<Pn¿ãÎø˜’’Ò~ıfàá_=âµxGNËÈøàƒâ/++3nœ7=ôc?a˜½z7§êã<øĞC†HIKß»w_Cccf»ö)ié‡ŠùË_ÿj˜@BâıúÛ¶oŸœ?Å0¥er vers une <var>URL</var> externe pour traiter
+      le problème ou l'erreur</li>
+    </ol>
+
+    <p>La première option constitue le comportement par défaut; pour
+    choisir une des trois autres options, il faut configurer Apache à
+    l'aide de la directive <code class="directive">ErrorDocument</code>, suivie
+    du code de la réponse HTTP et d'une URL ou d'un message. Apache
+    httpd fournit parfois des informations supplémentaires à propos du
+    problème ou de l'erreur.</p>
+
+    <p>Les URLs peuvent commencer par un slash (/) pour les chemins web
+    locaux (relatifs au répertoire défini par la directive <code class="directive"><a href="#documentroot">DocumentRoot</a></code>), ou se présenter sous la
+    forme d'une URL complète que le client pourra résoudre.
+    Alternativement, un message à afficher par le navigateur pourra être
+    fourni. Exemples :</p>
+
+    <div class="example"><p><code>
+      ErrorDocument 500 http://foo.example.com/cgi-bin/tester<br />
+      ErrorDocument 404 /cgi-bin/bad_urls.pl<br />
+      ErrorDocument 401 /subscription_info.html<br />
+      ErrorDocument 403 "Désolé, vous n'avez pas l'autorisation d'accès
+      aujourd'hui"<br />
+      ErrorDocument 403 Interdit!
+    </code></p></div>
+
+    <p>De plus, on peut spécifier la valeur spéciale <code>default</code>
+    pour indiquer l'utilisation d'un simple message d'Apache httpd codé en
+    dur. Bien que non nécessaire dans des circonstances normales, la
+    spécification de la valeur <code>default</code> va permettre de
+    rétablir l'utilisation du simple message d'Apache httpd codé en dur pour
+    les configurations qui sans cela, hériteraient d'une directive
+    <code class="directive">ErrorDocument</code> existante.</p>
+
+    <div class="example"><p><code>
+      ErrorDocument 404 /cgi-bin/bad_urls.pl<br /><br />
+      &lt;Directory /web/docs&gt;<br />
+      <span class="indent">
+        ErrorDocument 404 default<br />
+      </span>
+      &lt;/Directory&gt;
+    </code></p></div>
+
+    <p>Notez que lorsque vous spécifiez une directive
+    <code class="directive">ErrorDocument</code> pointant vers une URL distante
+    (c'est à dire tout ce qui commence par le préfixe http), le serveur
+    HTTP Apache va
+    envoyer une redirection au client afin de lui indiquer où trouver le
+    document, même dans le cas où ce document se trouve sur le serveur
+    local. Ceci a de nombreuses conséquences dont la plus importante
+    réside dans le fait que le client ne recevra pas le code d'erreur
+    original, mais au contraire un code de statut de redirection. Ceci
+    peut en retour semer la confusion chez les robots web et divers
+    clients qui tentent de déterminer la validité d'une URL en examinant
+    le code de statut. De plus, si vous utilisez une URL distante avec
+    <code>ErrorDocument 401</code>, le client ne saura pas qu'il doit
+    demander un mot de passe à l'utilisateur car il ne recevra pas le
+    code de statut 401. C'est pourquoi, <strong>si vous utilisez une
+    directive <code>ErrorDocument 401</code>, elle devra faire référence
+    à un document par le biais d'un chemin local.</strong></p>
+
+    <p>Microsoft Internet Explorer (MSIE) ignore par défaut les messages
+    d'erreur générés par le serveur lorsqu'ils sont trop courts et
+    remplacent ses propres messages d'erreur "amicaux". Le seuil de
+    taille varie en fonction du type d'erreur, mais en général, si la
+    taille de votre message d'erreur est supérieure à 512 octets, il y a
+    peu de chances pour que MSIE l'occulte, et il sera affiché par ce
+    dernier. Vous trouverez d'avantage d'informations dans l'article de
+    la base de connaissances Microsoft <a href="http://support.microsoft.com/default.aspx?scid=kb;en-us;Q294807">Q294807</a>.</p>
+
+    <p>Bien que la plupart des messages d'erreur internes originaux
+    puissent être remplacés, ceux-ci sont cependant conservés dans
+    certaines circonstances sans tenir compte de la définition de la
+    directive <code class="directive"><a href="#errordocument">ErrorDocument</a></code>. En
+    particulier, en cas de détection d'une requête mal formée, le
+    processus de traitement normal des requêtes est immédiatement
+    interrompu, et un message d'erreur interne est renvoyé, ceci afin de
+    se prémunir contre les problèmes de sécurité liés aux requêtes mal
+    formées.</p>
+
+    <p>Si vous utilisez mod_proxy, il est en général préférable
+    d'activer <code class="directive"><a href="../mod/mod_proxy.html#proxyerroroverride">ProxyErrorOverride</a></code> afin d'être en
+    mesure de produire des messages d'erreur personnalisés pour le
+    compte de votre serveur d'origine. Si vous n'activez pas
+    ProxyErrorOverride, Apache httpd ne générera pas de messages d'erreur
+    personnalisés pour le contenu mandaté.</p>
+
+
+<h3>Voir aussi</h3>
+<ul>
+<li><a href="../custom-error.html">documentation sur la
+personnalisation des réponses</a></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="ErrorLog" id="ErrorLog">ErrorLog</a> <a name="errorlog" id="errorlog">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Définition du chemin du journal des erreurs</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code> ErrorLog <var>chemin fichier</var>|syslog[:<var>facility</var>]</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>ErrorLog logs/error_log (Unix) ErrorLog logs/error.log (Windows and OS/2)</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La directive <code class="directive">ErrorLog</code> permet de définir le
+    nom du fichier dans lequel le serveur va journaliser toutes les
+    erreurs qu'il rencontre. Si le <var>chemin fichier</var> n'est pas
+    absolu, il est considéré comme relatif au chemin défini par la
+    directive <code class="directive"><a href="#serverroot">ServerRoot</a></code>.</p>
+
+    <div class="example"><h3>Exemple</h3><p><code>
+    ErrorLog /var/log/httpd/error_log
+    </code></p></div>
+
+    <p>Si le <var>chemin fichier</var> commence par une barre verticale
+    "<code>(|)</code>", il est considéré comme une commande à lancer pour traiter la
+    journalisation de l'erreur.</p>
+
+    <div class="example"><h3>Exemple</h3><p><code>
+    ErrorLog "|/usr/local/bin/erreurs_httpd"
+    </code></p></div>
+
+    <p>Voir les notes à propos des <a href="../logs.html#piped">journaux
+    redirigés</a> pour plus d'informations.</p>
+
+    <p>L'utilisation de <code>syslog</code> à la place d'un nom de
+    fichier active la journalisation via syslogd(8) si le système le
+    supporte. Le dispositif syslog par défaut est <code>local7</code>,
+    mais vous pouvez le modifier à l'aide de la syntaxe
+    <code>syslog:<var>facility</var></code>, où <var>facility</var> peut
+    être remplacé par un des noms habituellement documentés dans la page
+    de man syslog(1). Le dispositif syslog <code>local7</code> est
+    global, et si il est modifié dans un serveur virtuel, le dispositif
+    final spécifié affecte l'ensemble du serveur</p>
+
+    <div class="example"><h3>Exemple</h3><p><code>
+    ErrorLog syslog:user
+    </code></p></div>
+
+    <p>SECURITE : Voir le document <a href="../misc/security_tips.html#serverroot">conseils à propos de
+    sécurité</a> pour des détails sur les raisons pour lesquelles votre
+    sécurité peut être compromise si le répertoire contenant les
+    fichiers journaux présente des droits en écriture pour tout autre
+    utilisateur que celui sous lequel le serveur est démarré.</p>
+    <div class="warning"><h3>Note</h3>
+      <p>Lors de la spécification d'un chemin de fichier sur les
+      plates-formes non-Unix, on doit veiller à n'utiliser que des
+      slashes (/), même si la plate-forme autorise l'utilisation des
+      anti-slashes (\). Et d'une manière générale, il est recommandé de
+      n'utiliser que des slashes (/) dans les fichiers de
+      configuration.</p>
+    </div>
+
+<h3>Voir aussi</h3>
+<ul>
+<li><code class="directive"><a href="#loglevel">LogLevel</a></code></li>
+<li><a href="../logs.html">Fichiers journaux du serveur HTTP Apache</a></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="ErrorLogFormat" id="ErrorLogFormat">ErrorLogFormat</a> <a name="errorlogformat" id="errorlogformat">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Spécification du format des entrées du journal des erreurs</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code> ErrorLogFormat [connection|request] <var>format</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Disponible depuis la version 2.3.9 d'Apache</td></tr>
+</table>
+    <p>La directive <code class="directive">ErrorLogFormat</code> permet de
+    spécifier quelles informations supplémentaires vont être enregistrées
+    dans le journal des erreurs en plus du message habituel.</p>
+
+    <div class="example"><h3>Exemple simple</h3><p><code>
+        ErrorLogFormat "[%t] [%l] [pid %P] %F: %E: [client %a] %M"
+    </code></p></div>
+
+    <p>La spécification de <code>connection</code> ou
+    <code>request</code> comme premier paramètre permet de définir des
+    formats supplémentaires, ce qui a pour effet de journaliser des
+    informations additionnelles lorsque le premier message est
+    enregistré respectivement pour une connexion ou une requête
+    spécifique. Ces informations additionnelles ne sont enregistrées
+    qu'une seule fois par connexion/requête. Si le traitement d'une
+    connexion ou d'une requête ne génère aucun message dans le journal,
+    alors aucune information additionnelle n'est enregistrée.</p>
+
+    <p>Il peut arriver que certains items de la chaîne de format ne
+    produisent aucune sortie. Par exemple, l'en-tête Referer n'est
+    présent que si le message du journal est associé à une requête et s'il
+    est généré à un moment où l'en-tête Referer a déjà été lu par le
+    client. Si aucune sortie n'est générée, le comportement par défaut
+    consiste à supprimer tout ce qui se trouve entre l'espace précédent
+    et le suivant. Ceci implique que la ligne de journalisation est
+    divisée en champs ne contenant pas d'espace séparés par des espaces.
+    Si un item de la chaîne de format ne génère aucune sortie,
+    l'ensemble du champ est omis. Par exemple, si l'adresse distante
+    <code>%a</code> du format <code>[%t] [%l] [%a] %M&nbsp;</code> n'est
+    pas disponible, les crochets qui l'entourent ne seront eux-mêmes pas
+    enregistrés. Il est possible d'échapper les espaces par un anti-slash
+    afin qu'ils ne soient pas considérés comme séparateurs de champs.
+    La combinaison '%&nbsp;' (pourcentage espace) est un délimiteur de
+    champ de taille nulle qui ne génère aucune sortie.</p>
+
+    <p>Ce comportement peut être changé en ajoutant des modificateurs à
+    l'item de la chaîne de format. Le modificateur <code>-</code>
+    (moins) provoque l'enregistrement d'un signe moins si l'item
+    considéré ne génère aucune sortie. Pour les formats à enregistrement
+    unique par connexion/requête, il est aussi possible d'utiliser le
+    modificateur <code>+</code> (plus). Si un item ne générant aucune
+    sortie possède le modificateur plus, la ligne dans son ensemble est
+    omise.</p>
+
+    <p>Un modificateur de type entier permet d'assigner un niveau de
+    sévérité à un item de format. L'item considéré ne
+    sera journalisé que si la sévérité du message n'est pas
+    plus haute que le niveau de sévérité spécifié. Les
+    valeurs possibles vont de 1 (alert) à 15 (trace8), en passant par 4
+    (warn) ou 7 (debug).</p>
+
+    <p>Par exemple, voici ce qui arriverait si vous ajoutiez des
+    modificateurs à l'item <code>%{Referer}i</code> qui enregistre le
+    contenu de l'en-tête <code>Referer</code>.</p>
+
+    <table class="bordered"><tr class="header"><th>Item modifié</th><th>Signification</th></tr>
+<tr>
+    <td><code>%-{Referer}i</code></td>
+    <td>Enregistre le caractère <code>-</code> si l'en-tête
+    <code>Referer</code> n'est pas défini.</td>
+    </tr>
+<tr class="odd">
+    <td><code>%+{Referer}i</code></td>
+    <td>N'enregistre rien si l'en-tête
+    <code>Referer</code> n'est pas défini.</td>
+    </tr>
+<tr>
+    <td><code>%4{Referer}i</code></td>
+    <td>N'enregistre le contenu de l'en-tête <code>Referer</code> que si
+    la sévérité du message de journalisation est supérieure à 4.</td>
+    </tr>
+</table>
+
+    <p>Certains items de format acceptent des paramètres supplémentaires
+    entre accolades.</p>
+
+    <table class="bordered"><tr class="header"><th>Chaîne&nbsp;de&nbsp;format</th> <th>Description</th></tr>
+<tr><td><code>%%</code></td>
+        <td>Le signe pourcentage</td></tr>
+<tr class="odd"><td><code>%a</code></td>
+        <td>Adresse IP et port clients</td></tr>
+<tr><td><code>%{c}a</code></td>
+        <td>Port et adresse IP sous-jacents du correspondant pour la
+	connexion (voir le module
+	<code class="module"><a href="../mod/mod_remoteip.html">mod_remoteip</a></code>)</td></tr>
+<tr class="odd"><td><code>%A</code></td>
+        <td>Adresse IP et port locaux</td></tr>
+<tr><td><code>%{<em>name</em>}e</code></td>
+        <td>Variable d'environnement de requête <em>name</em></td></tr>
+<tr class="odd"><td><code>%E</code></td>
+        <td>Etat d'erreur APR/OS et chaîne</td></tr>
+<tr><td><code>%F</code></td>
+        <td>Nom du fichier source et numéro de ligne de l'appel du
+	journal</td></tr>
+<tr class="odd"><td><code>%{<em>name</em>}i</code></td>
+        <td>En-tête de requête <em>name</em></td></tr>
+<tr><td><code>%k</code></td>
+        <td>Nombre de requêtes persistantes pour cette connexion</td></tr>
+<tr class="odd"><td><code>%l</code></td>
+        <td>Sévérité du message</td></tr>
+<tr><td><code>%L</code></td>
+        <td>Identifiant journal de la requête</td></tr>
+<tr class="odd"><td><code>%{c}L</code></td>
+        <td>Identifiant journal de la connexion</td></tr>
+<tr><td><code>%{C}L</code></td>
+        <td>Identifiant journal de la connexion si utilisé dans la
+	portée de la connexion, vide sinon</td></tr>
+<tr class="odd"><td><code>%m</code></td>
+        <td>Nom du module qui effectue la journalisation du message</td></tr>
+<tr><td><code>%M</code></td>
+        <td>Le message effectif</td></tr>
+<tr class="odd"><td><code>%{<em>name</em>}n</code></td>
+        <td>Note de requête <em>name</em></td></tr>
+<tr><td><code>%P</code></td>
+        <td>Identifiant du processus courant</td></tr>
+<tr class="odd"><td><code>%T</code></td>
+        <td>Identifiant du thread courant</td></tr>
+<tr><td><code>%{g}T</code></td>
+        <td>Identifiant unique de thread système du thread courant
+	(l'identifiant affiché par la commande <code>top</code> par
+	exemple ; seulement sous Linux pour l'instant)</td></tr>
+<tr class="odd"><td><code>%t</code></td>
+        <td>L'heure courante</td></tr>
+<tr><td><code>%{u}t</code></td>
+        <td>L'heure courante avec les microsecondes</td></tr>
+<tr class="odd"><td><code>%{cu}t</code></td>
+        <td>L'heure courante au format compact ISO 8601, avec les
+	microsecondes</td></tr>
+<tr><td><code>%v</code></td>
+        <td>Le nom de serveur canonique <code class="directive"><a href="#servername">ServerName</a></code> du serveur courant.</td></tr>
+<tr class="odd"><td><code>%V</code></td>
+        <td>Le nom de serveur du serveur qui sert la requête en accord
+	avec la définition de la directive <code class="directive"><a href="#usecanonicalname">UseCanonicalName</a></code>.</td></tr>
+<tr><td><code>\&nbsp;</code> (anti-slash espace)</td>
+        <td>Espace non délimiteur</td></tr>
+<tr class="odd"><td><code>%&nbsp;</code> (pourcentage espace)</td>
+        <td>Délimiteur de champ (aucune sortie)</td></tr>
+</table>
+
+    <p>L'item de format identifiant journal <code>%L</code> génère un
+    identifiant unique pour une connexion ou une requête. Il peut servir
+    à déterminer quelles lignes correspondent à la même connexion ou
+    requête ou quelle requête est associée à tel connexion. Un item de
+    format <code>%L</code> est aussi disponible dans le module
+    <code class="module"><a href="../mod/mod_log_config.html">mod_log_config</a></code>, mais il permet dans ce contexte de
+    corréler les entrées du journal des accès avec celles du journal des
+    erreurs. Si le module <code class="module"><a href="../mod/mod_unique_id.html">mod_unique_id</a></code> est chargé,
+    c'est son identifiant unique qui sera utilisé comme identifiant de
+    journal pour les requêtes.</p>
+
+    <div class="example"><h3>Exemple (format par défaut)</h3><p><code>
+        ErrorLogFormat "[%{u}t] [%-m:%l] [pid %P:tid %T] %7F: %E: [client\ %a]
+        %M%&nbsp;,\&nbsp;referer\&nbsp;%{Referer}i"
+    </code></p></div>
+
+    <p>Cet exemple renverrait un message d'erreur du style :</p>
+
+    <div class="example"><p><code>
+    [Thu May 12 08:28:57.652118 2011] [core:error] [pid 8777:tid 4326490112] [client ::1:58619] File does not exist: /usr/local/apache2/htdocs/favicon.ico
+    </code></p></div>
+
+    <p>Notez que, comme indiqué plus haut, certains champs sont
+    totalement supprimés s'ils n'ont pas été définis.</p>
+
+    <div class="example"><h3>Exemple (similaire au format 2.2.x)</h3><p><code>
+        ErrorLogFormat "[%t] [%l] %7F: %E: [client\ %a]
+        %M%&nbsp;,\&nbsp;referer\&nbsp;%{Referer}i"
+    </code></p></div>
+
+    <div class="example"><h3>Exemple avancé avec identifiants journal de
+    requête/connexion</h3><p><code>
+        ErrorLogFormat "[%{uc}t] [%-m:%-l] [R:%L] [C:%{C}L] %7F: %E: %M"<br />
+        ErrorLogFormat request "[%{uc}t] [R:%L] Request %k on C:%{c}L pid:%P tid:%T"<br />
+        ErrorLogFormat request "[%{uc}t] [R:%L] UA:'%+{User-Agent}i'"<br />
+        ErrorLogFormat request "[%{uc}t] [R:%L] Referer:'%+{Referer}i'"<br />
+        ErrorLogFormat connection "[%{uc}t] [C:%{c}L] local\ %a remote\ %A"<br />
+    </code></p></div>
+
+
+<h3>Voir aussi</h3>
+<ul>
+<li><code class="directive"><a href="#errorlog">ErrorLog</a></code></li>
+<li><code class="directive"><a href="#loglevel">LogLevel</a></code></li>
+<li><a href="../logs.html">Fichiers journaux du serveur HTTP Apache</a></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="ExtendedStatus" id="ExtendedStatus">ExtendedStatus</a> <a name="extendedstatus" id="extendedstatus">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Extrait des informations d'état étendues pour chaque
+requête</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>ExtendedStatus On|Off</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>ExtendedStatus Off</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+
+	<p>Cette option permet d'extraire des données supplémentaires
+	concernant la requête en cours de traitement pour un processus
+	donné, ainsi qu'un résumé d'utilisation ; vous pouvez accéder à
+	ces variables pendant l'exécution en configurant
+	<code class="module"><a href="../mod/mod_status.html">mod_status</a></code>. Notez que d'autres modules sont
+	susceptibles de s'appuyer sur ce tableau de bord.</p>
+
+    <p>Cette directive s'applique au serveur dans son ensemble, et ne
+    peut pas être activée/désactivée pour un serveur virtuel
+    particulier. Notez que l'extraction des informations d'état étendues
+    peut ralentir le serveur. Notez aussi que cette définition ne peut
+    pas être modifiée au cours d'un redémarrage graceful.</p>
+
+    <div class="note">
+    <p>Notez que le chargement de <code class="module"><a href="../mod/mod_status.html">mod_status</a></code> définit
+    automatiquement ExtendedStatus à On, et que d'autres modules tiers
+    sont susceptibles d'en faire de même. De tels modules ont besoin
+    d'informations détaillées à propos de l'état de tous les processus.
+    Depuis la version 2.3.6, <code class="module"><a href="../mod/mod_status.html">mod_status</a></code> a définit la
+    valeur par défaut à On, alors qu'elle était à Off dans les versions
+    antérieures.</p>
+    </div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="FileETag" id="FileETag">FileETag</a> <a name="fileetag" id="fileetag">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Caractéristiques de fichier utilisées lors de la génération
+de l'en-tête de réponse HTTP ETag pour les fichiers statiques</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>FileETag <var>composant</var> ...</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>FileETag MTime Size</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>FileInfo</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>La valeur par défaut était "INode&nbsp;MTime&nbsp;Size"
+dans les versions 2.3.14 et antérieures.</td></tr>
+</table>
+    <p>
+    La directive <code class="directive">FileETag</code> définit les
+    caractéristiques de fichier utilisées lors de la génération de
+    l'en-tête de réponse HTTP <code>ETag</code> (entity tag) quand le
+    document est contenu dans un fichier statique(la valeur de
+    <code>ETag</code>
+    est utilisée dans le cadre de la gestion du cache pour préserver la
+    bande passante réseau). La directive
+    <code class="directive">FileETag</code> vous permet maintenant de choisir
+    quelles caractéristiques du fichier vont être utilisées, le cas
+    échéant. Les mots-clés reconnus sont :
+    </p>
+
+    <dl>
+     <dt><strong>INode</strong></dt>
+     <dd>Le numéro d'i-node du fichier sera inclus dans le processus de
+     génération</dd>
+     <dt><strong>MTime</strong></dt>
+     <dd>La date et l'heure auxquelles le fichier a été modifié la
+     dernière fois seront incluses</dd>
+     <dt><strong>Size</strong></dt>
+     <dd>La taille du fichier en octets sera incluse</dd>
+     <dt><strong>All</strong></dt>
+     <dd>Tous les champs disponibles seront utilisés. Cette définition
+     est équivalente à : <div class="example"><p><code>FileETag INode MTime
+     Size</code></p></div></dd>
+     <dt><strong>None</strong></dt>
+     <dd>Si le document se compose d'un fichier, aucun champ
+     <code>ETag</code> ne sera inclus dans la réponse</dd>
+    </dl>
+
+    <p>Les mots-clés <code>INode</code>, <code>MTime</code>, et
+    <code>Size</code> peuvent être préfixés par <code>+</code> ou
+    <code>-</code>, ce qui permet de modifier les valeurs par défaut
+    héritées d'un niveau de configuration plus général. Tout mot-clé
+    apparaissant sans aucun préfixe annule entièrement et immédiatement
+    les configurations héritées.</p>
+
+    <p>Si la configuration d'un répertoire contient
+    <code>FileETag&nbsp;INode&nbsp;MTime&nbsp;Size</code>, et si un de
+    ses sous-répertoires contient <code>FileETag&nbsp;-INode</code>, la
+    configuration de ce sous-répertoire (qui sera propagée vers tout
+    sous-répertoire qui ne la supplante pas), sera équivalente à
+    <code>FileETag&nbsp;MTime&nbsp;Size</code>.</p>
+    <div class="warning"><h3>Avertissement</h3>
+    Ne modifiez pas les valeurs par défaut pour les répertoires ou
+    localisations où WebDAV est activé et qui utilisent
+    <code class="module"><a href="../mod/mod_dav_fs.html">mod_dav_fs</a></code> comme fournisseur de stockage.
+    <code class="module"><a href="../mod/mod_dav_fs.html">mod_dav_fs</a></code> utilise
+    <code>MTime&nbsp;Size</code> comme format fixe pour les
+    comparaisons de champs <code>ETag</code> dans les requêtes
+    conditionnelles. Ces requêtes conditionnelles échoueront si le
+    format <code>ETag</code> est modifié via la directive
+    <code class="directive">FileETag</code>.
+    </div>
+    <div class="note"><h3>Inclusions côté serveur</h3>
+    Aucun champ ETag n'est généré pour les réponses interprétées par
+    <code class="module"><a href="../mod/mod_include.html">mod_include</a></code>, car l'entité de la réponse peut
+    changer sans modification de l'INode, du MTime, ou de la taille du
+    fichier statique contenant les directives SSI.
+    </div>
+
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="Files" id="Files">&lt;Files&gt;</a> <a name="files" id="files">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Contient des directives qui s'appliquent aux fichiers
+précisés</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;Files <var>nom fichier</var>&gt; ... &lt;/Files&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La directive <code class="directive">&lt;Files&gt;</code> limite
+    la portée des directives qu'elle contient aux fichiers précisés.
+    Elle est comparable aux directives <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> et <code class="directive"><a href="#location">&lt;Location&gt;</a></code>. Elle doit se terminer par une
+    balise <code>&lt;/Files&gt;</code>. Les directives contenues dans
+    cette section s'appliqueront à tout objet dont le nom de base (la
+    dernière partie du nom de fichier) correspond au fichier spécifié.
+    Les sections <code class="directive">&lt;Files&gt;</code> sont
+    traitées selon l'ordre dans lequel elles apparaissent dans le
+    fichier de configuration, après les sections <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> et la lecture des fichiers
+    <code>.htaccess</code>, mais avant les sections <code class="directive"><a href="#location">&lt;Location&gt;</a></code>. Notez que les
+    sections <code class="directive">&lt;Files&gt;</code> peuvent être
+    imbriquées dans les sections <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> afin de restreindre la portion
+    du système de fichiers à laquelle ces dernières vont
+    s'appliquer.</p>
+
+    <p>L'argument <var>filename</var> peut contenir un nom de fichier
+    ou une chaîne de caractères avec caractères génériques, où
+    <code>?</code> remplace un caractère, et <code>*</code> toute chaîne
+    de caractères. On peut aussi utiliser les <a class="glossarylink" href="../glossary.html#regex" title="voir glossaire">Expressions rationnelles</a> en ajoutant la
+    caractère <code>~</code>. Par exemple :</p>
+
+    <div class="example"><p><code>
+      &lt;Files ~ "\.(gif|jpe?g|png)$"&gt;
+    </code></p></div>
+
+    <p>correspondrait à la plupart des formats graphiques de l'Internet.
+    Il est cependant préférable d'utiliser la directive <code class="directive"><a href="#filesmatch">&lt;FilesMatch&gt;</a></code>.</p>
+
+    <p>Notez qu'à la différence des sections <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> et <code class="directive"><a href="#location">&lt;Location&gt;</a></code>, les sections <code class="directive">&lt;Files&gt;</code> peuvent être utilisées dans les
+    fichiers <code>.htaccess</code>. Ceci permet aux utilisateurs de
+    contrôler l'accès à leurs propres ressources, fichier par
+    fichier.</p>
+
+
+<h3>Voir aussi</h3>
+<ul>
+<li><a href="../sections.html">Comment fonctionnent les sections
+&lt;Directory&gt;, &lt;Location&gt; et &lt;Files&gt;</a> pour une
+explication de la manière dont ces différentes sections se combinent
+entre elles à la réception d'une requête</li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="FilesMatch" id="FilesMatch">&lt;FilesMatch&gt;</a> <a name="filesmatch" id="filesmatch">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Contient des directives qui s'appliquent à des fichiers
+spécifiés sous la forme d'expressions rationnelles</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;FilesMatch <var>expression rationnelle</var>&gt; ...
+&lt;/FilesMatch&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La section <code class="directive">&lt;FilesMatch&gt;</code>
+    limite la portée des directives qu'elle contient aux fichiers
+    spécifiés, tout comme le ferait une section <code class="directive"><a href="#files">&lt;Files&gt;</a></code>. Mais elle accepte aussi les
+    <a class="glossarylink" href="../glossary.html#regex" title="voir glossaire">expressions rationnelles</a>. Par
+    exemple :</p>
+
+    <div class="example"><p><code>
+      &lt;FilesMatch "\.(gif|jpe?g|png)$"&gt;
+    </code></p></div>
+
+    <p>correspondrait à la plupart des formats graphiques de
+    l'Internet.</p>
+
+<h3>Voir aussi</h3>
+<ul>
+<li><a href="../sections.html">Comment fonctionnent les sections
+&lt;Directory&gt;, &lt;Location&gt; et &lt;Files&gt;</a> pour une
+explication de la manière dont ces différentes sections se combinent
+entre elles à la réception d'une requête</li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="ForceType" id="ForceType">ForceType</a> <a name="forcetype" id="forcetype">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Force le type de médium spécifié dans le champ d'en-tête
+HTTP Content-Type pour les fichiers correspondants</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>ForceType <var>type médium</var>|None</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>FileInfo</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Intégré dans le coeur d'Apache httpd depuis la version
+2.0</td></tr>
+</table>
+    <p>Lorsqu'elle est placée dans un fichier <code>.htaccess</code> ou
+    une section <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code>, <code class="directive"><a href="#location">&lt;Location&gt;</a></code>, ou <code class="directive"><a href="#files">&lt;Files&gt;</a></code>, cette directive force
+    l'identification du type MIME des fichiers spécifiés à la valeur de
+    l'argument <var>type médium</var>. Par exemple, si vous possédez un
+    répertoire ne contenant que des fichiers GIF, et si vous ne voulez
+    pas leur ajouter l'extension <code>.gif</code>, vous pouvez utiliser
+    :</p>
+
+    <div class="example"><p><code>
+      ForceType image/gif
+    </code></p></div>
+
+    <p>Notez que cette directive l'emporte sur d'autres associations de
+    type de médium indirectes définies dans mime.types ou via la
+    directive <code class="directive"><a href="../mod/mod_mime.html#addtype">AddType</a></code>.</p>
+
+    <p>Vous pouvez aussi annuler toute définition plus générale de
+    <code class="directive">ForceType</code> en affectant la valeur
+    <code>None</code> à l'argument <var>type médium</var> :</p>
+
+    <div class="example"><p><code>
+      # force le type MIME de tous les fichiers à image/gif:<br />
+      &lt;Location /images&gt;<br />
+        <span class="indent">
+          ForceType image/gif<br />
+        </span>
+      &lt;/Location&gt;<br />
+      <br />
+      # mais utilise les méthodes classiques d'attribution du type MIME
+      # dans le sous-répertoire suivant :<br />
+      &lt;Location /images/mixed&gt;<br />
+      <span class="indent">
+        ForceType None<br />
+      </span>
+      &lt;/Location&gt;
+    </code></p></div>
+    
+    <p>A la base, cette directive écrase le type de contenu généré pour
+    les fichiers statiques servis à partir du sytème de fichiers. Pour
+    les ressources autres que les fichiers statiques pour lesquels le
+    générateur de réponse spécifie en général un type de contenu, cette
+    directive est ignorée.</p>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="GprofDir" id="GprofDir">GprofDir</a> <a name="gprofdir" id="gprofdir">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Répertoire dans lequel écrire les données de profiling
+gmon.out.</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>GprofDir <var>/tmp/gprof/</var>|<var>/tmp/gprof/</var>%</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Lorsque le serveur a été compilé avec le support du profiling
+    gprof, la directive <code class="directive">GprofDir</code> permet de
+    spécifier dans quel répertoire les fichiers <code>gmon.out</code>
+    doivent être écrits lorsque le processus s'arrête. Si l'argument se
+    termine par un caractère pourcentage ('%'), des sous-répertoires
+    sont créés pour chaque identifiant de processus.</p>
+
+    <p>Cette directive ne fonctionne actuellement qu'avec le MPM
+    <code class="module"><a href="../mod/prefork.html">prefork</a></code>.</p>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="HostnameLookups" id="HostnameLookups">HostnameLookups</a> <a name="hostnamelookups" id="hostnamelookups">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Active la recherche DNS sur les adresses IP des
+clients</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>HostnameLookups On|Off|Double</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>HostnameLookups Off</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Cette directive active la recherche DNS afin de pouvoir
+    journaliser les nom d'hôtes (et les passer aux programmes CGI et aux
+    inclusions SSI via la variable <code>REMOTE_HOST</code>). La valeur
+    <code>Double</code> déclenche une double recherche DNS inverse. En
+    d'autres termes, une fois la recherche inverse effectuée, on lance
+    une recherche directe sur le résultat de cette dernière. Au moins
+    une des adresses IP fournies par la recherche directe doit
+    correspondre à l'adresse originale (ce que l'on nomme
+    <code>PARANOID</code> dans la terminologie "tcpwrappers").</p>
+
+    <p>Quelle que soit la configuration, lorsqu'on utilise
+    <code class="module"><a href="../mod/mod_authz_host.html">mod_authz_host</a></code> pour contrôler l'accès en fonction
+    du nom d'hôte, une double recherche DNS inverse est effectuée,
+    sécurité oblige. Notez cependant que le résultat de cette double
+    recherche n'est en général pas accessible, à moins que vous n'ayez
+    spécifié <code>HostnameLookups Double</code>. Par exemple, si vous
+    n'avez spécifié que <code>HostnameLookups On</code>, et si une
+    requête concerne un objet protégé par des restrictions en fonction
+    du nom d'hôte, quel que soit le résultat de la double recherche
+    inverse, les programmes CGI ne recevront que le résultat de la
+    recherche inverse simple dans la variable
+    <code>REMOTE_HOST</code>.</p>
+
+    <p>La valeur par défaut est <code>Off</code> afin de préserver le
+    traffic réseau des sites pour lesquels la recherche inverse n'est
+    pas vraiment nécessaire. Cette valeur par défaut est aussi bénéfique
+    pour les utilisateurs finaux car il n'ont ainsi pas à subir de temps
+    d'attente supplémentaires dus aux recherches DNS. Les sites
+    fortement chargés devraient laisser cette directive à
+    <code>Off</code>, car les recherches DNS peuvent prendre des temps
+    très longs. Vous pouvez éventuellement utiliser hors ligne
+    l'utilitaire <code class="program"><a href="../programs/logresolve.html">logresolve</a></code>, compilé par défaut dans
+    le sous-répertoire <code>bin</code> de votre répertoire
+    d'installation, afin de déterminer les noms d'hôtes associés aux
+    adresses IP journalisées.</p>
+
+    <p>Enfin, si vous avez des <a href="mod_authz_host.html#reqhost">directives Require à base de
+    nom</a>, une recherche de nom d'hôte sera effectuée quelle que soit
+    la définition de la directive <code>HostnameLookups</code>.</p>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="If" id="If">&lt;If&gt;</a> <a name="if" id="if">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Contient des directives qui ne s'appliquent que si une
+condition est satisfaite au cours du traitement d'une
+requête</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;If <var>expression</var>&gt; ... &lt;/If&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La directive <code class="directive">&lt;If&gt;</code> évalue une
+    expression à la volée, et applique les directives qu'elle contient
+    si et seulement si l'expression renvoie la valeur "vrai". Par
+    exemple :</p>
+
+    <div class="example"><p><code>
+        &lt;If "-z req('Host')"&gt;
+    </code></p></div>
+
+    <p>serait satisfaite pour les requêtes HTTP/1.0 sans en-tête
+    <var>Host:</var>. Les expressions peuvent contenir différents
+    opérateurs de type shell pour la comparaison de chaînes
+    (<code>=</code>, <code>!=</code>, <code>&lt;</code>, ...), la
+    comparaison d'entiers (<code>-eq</code>, <code>-ne</code>, ...), ou
+    à usages divers (<code>-n</code>, <code>-z</code>, <code>-f</code>,
+    ...). Les expressions rationnelles sont aussi supportées,</p>
+
+    <div class="example"><p><code>
+        &lt;If "%{QUERY_STRING} =~ /(delete|commit)=.*?elem/"&gt;
+    </code></p></div>
+
+    <p>ainsi que les comparaison de modèles de type shell et de
+    nombreuses autres opérations. Ces opérations peuvent être effectuées
+    sur les en-têtes de requêtes (<code>req</code>), les variables
+    d'environnement (<code>env</code>), et un grand nombre d'autres
+    propriétés. La documentation complète est disponible dans <a href="../expr.html">Les expressions dans le serveur HTTP Apache</a>.</p>
+
+
+<h3>Voir aussi</h3>
+<ul>
+<li><a href="../expr.html">Les expressions dans le serveur HTTP
+Apache</a>, pour une référence complète et d'autres exemples.</li>
+<li><code class="directive"><a href="#elseif">&lt;ElseIf&gt;</a></code></li>
+<li><code class="directive"><a href="#else">&lt;Else&gt;</a></code></li>
+<li><a href="../sections.html">Comment fonctionnent les sections
+&lt;Directory&gt;, &lt;Location&gt; et &lt;Files&gt;</a> pour une
+explication de la manière dont ces différentes sections se combinent
+entre elles à la réception d'une requête. Les
+directives <code class="directive">&lt;If&gt;</code>, <code class="directive">&lt;ElseIf&gt;</code>, et <code class="directive">&lt;Else&gt;</code> s'appliquent en dernier.</li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="IfDefine" id="IfDefine">&lt;IfDefine&gt;</a> <a name="ifdefine" id="ifdefine">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Contient des directives qui ne s'appliqueront que si un
+test retourne "vrai" au démarrage du serveur</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;IfDefine [!]<var>paramètre</var>&gt; ...
+    &lt;/IfDefine&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La section <code>&lt;IfDefine
+    <var>test</var>&gt;...&lt;/IfDefine&gt;</code> permet de
+    conférer un caractère conditionnel à un ensemble de directives. Les
+    directives situées à l'intérieur d'une section <code class="directive">&lt;IfDefine&gt;</code> ne s'appliquent que si
+    <var>test</var> est vrai. Si <var>test</var> est faux, tout ce qui
+    se trouve entre les balises de début et de fin est ignoré.</p>
+
+    <p><var>test</var> peut se présenter sous deux formes :</p>
+
+    <ul>
+      <li><var>nom paramètre</var></li>
+
+      <li><code>!</code><var>nom paramètre</var></li>
+    </ul>
+
+    <p>Dans le premier cas, les directives situées entre les balises de
+    début et de fin ne s'appliqueront que si le paramètre nommé <var>nom
+    paramètre</var> est défini. Le second format inverse le test, et
+    dans ce cas, les directives ne s'appliqueront que si <var>nom
+    paramètre</var> n'est <strong>pas</strong> défini.</p>
+
+    <p>L'argument <var>nom paramètre</var> est une définition qui peut
+    être effectuée par la ligne de commande
+    <code class="program"><a href="../programs/httpd.html">httpd</a></code> via le paramètre
+    <code>-D<var>paramètre</var></code> au démarrage du serveur, ou via la
+    directive <code class="directive"><a href="#define">Define</a></code>.</p>
+
+    <p>Les sections <code class="directive">&lt;IfDefine&gt;</code>
+    peuvent être imbriquées, ce qui permet d'implémenter un test
+    multi-paramètres simple. Exemple :</p>
+
+    <div class="example"><p><code>
+      httpd -DReverseProxy -DUseCache -DMemCache ...<br />
+      <br />
+      # httpd.conf<br />
+      &lt;IfDefine ReverseProxy&gt;<br />
+      <span class="indent">
+        LoadModule proxy_module   modules/mod_proxy.so<br />
+        LoadModule proxy_http_module   modules/mod_proxy_http.so<br />
+        &lt;IfDefine UseCache&gt;<br />
+        <span class="indent">
+          LoadModule cache_module   modules/mod_cache.so<br />
+          &lt;IfDefine MemCache&gt;<br />
+          <span class="indent">
+            LoadModule mem_cache_module   modules/mod_mem_cache.so<br />
+          </span>
+          &lt;/IfDefine&gt;<br />
+          &lt;IfDefine !MemCache&gt;<br />
+          <span class="indent">
+            LoadModule cache_disk_module   modules/mod_cache_disk.so<br />
+          </span>
+          &lt;/IfDefine&gt;
+        </span>
+        &lt;/IfDefine&gt;
+      </span>
+      &lt;/IfDefine&gt;
+    </code></p></div>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="IfModule" id="IfModule">&lt;IfModule&gt;</a> <a name="ifmodule" id="ifmodule">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Contient des directives qui ne s'appliquent qu'en fonction
+de la présence ou de l'absence d'un module spécifique</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;IfModule [!]<var>fichier module</var>|<var>identificateur
+module</var>&gt; ... &lt;/IfModule&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Les identificateurs de modules sont disponibles dans les
+versions 2.1 et supérieures.</td></tr>
+</table>
+    <p>La section <code>&lt;IfModule
+    <var>test</var>&gt;...&lt;/IfModule&gt;</code> permet de conférer à
+    des directives un caractère conditionnel basé sur la présence d'un
+    module spécifique. Les directives situées dans une section
+    <code class="directive">&lt;IfModule&gt;</code> ne s'appliquent que
+    si <var>test</var> est vrai. Si <var>test</var> est faux, tout ce
+    qui se trouve entre les balises de début et de fin est ignoré.</p>
+
+    <p><var>test</var> peut se présenter sous deux formes :</p>
+
+    <ul>
+      <li><var>module</var></li>
+
+      <li>!<var>module</var></li>
+    </ul>
+
+    <p>Dans le premier cas, les directives situées entre les balises de
+    début et de fin ne s'appliquent que si le module <var>module</var>
+    est présent -- soit compilé avec le binaire Apache httpd, soit chargé
+    dynamiquement via la directive <code class="directive"><a href="../mod/mod_so.html#loadmodule">LoadModule</a></code>. Le second format inverse le test, et dans
+    ce cas, les directives ne s'appliquent que si <var>module</var>
+    n'est <strong>pas</strong> présent.</p>
+
+    <p>L'argument <var>module</var> peut contenir soit l'identificateur
+    du module, soit le nom du fichier source du module. Par exemple,
+    <code>rewrite_module</code> est un identificateur et
+    <code>mod_rewrite.c</code> le nom du fichier source
+    correspondant. Si un module comporte plusieurs fichiers sources,
+    utilisez le nom du fichier qui contient la chaîne de caractères
+    <code>STANDARD20_MODULE_STUFF</code>.</p>
+
+    <p>Les sections <code class="directive">&lt;IfModule&gt;</code>
+    peuvent être imbriquées, ce qui permet d'implémenter des tests
+    multi-modules simples.</p>
+
+    <div class="note">Cette section ne doit être utilisée que si votre fichier de
+    configuration ne fonctionne qu'en fonction de la présence ou de
+    l'absence d'un module spécifique. D'une manière générale, il n'est
+    pas nécessaire de placer les directives à l'intérieur de sections
+    <code class="directive">&lt;IfModule&gt;</code>.</div>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="Include" id="Include">Include</a> <a name="include" id="include">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Inclut d'autres fichiers de configuration dans un des
+fichiers de configuration du serveur</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>Include <var>chemin-fichier</var>|<var>chemin-répertoire</var>|<var>wildcard</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Utilisation des caractères génériques dans la partie nom
+de fichier depuis la version 2.0.41, et dans la partie chemin depuis la
+version 2.3.6</td></tr>
+</table>
+    <p>Cette directive permet l'inclusion d'autres fichiers de
+    configuration dans un des fichiers de configuration du serveur.</p>
+
+    <p>On peut utiliser des caractères génériques de style Shell
+    (<code>fnmatch()</code>) aussi bien dans la partie nom de fichier du
+    chemin que dans la partie répertoires pour inclure plusieurs
+    fichiers en une
+    seule fois, selon leur ordre alphabétique. De plus, si la directive
+    <code class="directive">Include</code> pointe vers un répertoire, Apache
+    httpd inclura tous les fichiers de ce répertoire et de tous ces
+    sous-répertoires. L'inclusion de répertoires entiers est cependant
+    déconseillée, car il est fréquent d'oublier des fichiers
+    temporaires dans un répertoire, ce qui causerait une erreur
+    <code class="program"><a href="../programs/httpd.html">httpd</a></code> en cas d'inclusion. Pour inclure des
+    fichiers qui correspondent à un certain modèle, comme *.conf par
+    exemple, nous vous recommandons d'utiliser plutôt la syntaxe avec
+    caractères génériques comme ci-dessous.</p>
+
+    <p>La directive <code class="directive"><a href="#include">Include</a></code>
+    <strong>échouera avec un code d'erreur</strong> si une expression
+   contenant des caractères génériques ne correspond à aucun fichier.
+   Pour ignorer les expressions contenant des caractères génériques ne
+   correspondant à aucun fichier, utilisez la directive <code class="directive"><a href="#includeoptional">IncludeOptional</a></code>.</p>
+
+    <p>Le chemin fichier spécifié peut être soit un chemin absolu, soit
+    un chemin relatif au répertoire défini par la directive <code class="directive"><a href="#serverroot">ServerRoot</a></code>.</p>
+
+    <p>Exemples :</p>
+
+    <div class="example"><p><code>
+      Include /usr/local/apache2/conf/ssl.conf<br />
+      Include /usr/local/apache2/conf/vhosts/*.conf
+    </code></p></div>
+
+    <p>ou encore, avec des chemins relatifs au répertoire défini par la
+    directive <code class="directive"><a href="#serverroot">ServerRoot</a></code> :</p>
+
+    <div class="example"><p><code>
+      Include conf/ssl.conf<br />
+      Include conf/vhosts/*.conf
+    </code></p></div>
+
+    <p>On peut aussi insérer des caractères génériques dans la partie
+    répertoires du chemin. Dans l'exemple suivant, la directive
+    échouera si aucun sous-répertoire de conf/vhosts ne contient au
+    moins un fichier *.conf :</p>
+  
+    <div class="example"><p><code>
+      Include conf/vhosts/*/*.conf
+    </code></p></div>
+
+    <p>Par contre, dans l'exemple suivant, la directive sera simplement
+    ignorée si aucun sous-répertoire de conf/vhosts ne contient au
+    moins un fichier *.conf :</p>
+
+    <div class="example"><p><code>
+      IncludeOptional conf/vhosts/*/*.conf
+    </code></p></div>
+  
+
+<h3>Voir aussi</h3>
+<ul>
+<li><code class="directive"><a href="#includeoptional">IncludeOptional</a></code></li>
+<li><code class="program"><a href="../programs/apachectl.html">apachectl</a></code></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="IncludeOptional" id="IncludeOptional">IncludeOptional</a> <a name="includeoptional" id="includeoptional">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Inclusion de fichiers dans le fichier de configuration</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>IncludeOptional
+<var>chemin-fichier</var>|<var>chemin-répertoire</var>|<var>wildcard</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Disponible à partir de la version 2.3.6 du serveur HTTP
+Apache</td></tr>
+</table>
+    <p>Cette directive permet d'inclure des fichiers dans les fichiers
+    de configuration du serveur. Elle fonctionne de manière identique à
+    la directive <code class="directive"><a href="#include">Include</a></code>, à
+    l'exception du fait que si l'expression avec caractères génériques
+    wilcard ne correspond à aucun fichier ou répertoire, elle sera
+    ignorée silencieusement au lieu de causer une erreur.</p>    
+    
+
+<h3>Voir aussi</h3>
+<ul>
+<li><code class="directive"><a href="#include">Include</a></code></li>
+<li><code class="program"><a href="../programs/apachectl.html">apachectl</a></code></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="KeepAlive" id="KeepAlive">KeepAlive</a> <a name="keepalive" id="keepalive">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Active les connexions HTTP persistantes</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>KeepAlive On|Off</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>KeepAlive On</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>L'extension Keep-Alive de HTTP/1.0 et l'implémentation des
+    connexions persistantes dans HTTP/1.1 ont rendu possibles des
+    sessions HTTP de longue durée, ce qui permet de transmettre
+    plusieurs requêtes via la même connexion TCP. Dans certains cas, le
+    gain en rapidité pour des documents comportant de nombreuses images
+    peut atteindre 50%. Pour activer les connexions persistantes,
+    définissez <code>KeepAlive On</code>.</p>
+
+    <p>Pour les clients HTTP/1.0, les connexions persistantes ne seront
+    mises en oeuvre que si elles ont été spécialement demandées par un
+    client. De plus, une connexion persistante avec un client HTTP/1.0
+    ne peut être utilisée que si la taille du contenu est connue
+    d'avance. Ceci implique que les contenus dynamiques comme les
+    sorties CGI, les pages SSI, et les listings de répertoires générés
+    par le serveur n'utiliseront en général pas les connexions
+    persistantes avec les clients HTTP/1.0. Avec les clients HTTP/1.1,
+    les connexions persistantes sont utilisées par défaut, sauf
+    instructions contraires. Si le client le demande, le transfert par
+    tronçons de taille fixe (chunked encoding) sera utilisé afin de
+    transmettre un contenu de longueur inconnue via une connexion
+    persistante.</p>
+
+    <p>Lorsqu'un client utilise une connexion persistante, elle comptera
+    pour une seule requête pour la directive <code class="directive"><a href="../mod/mpm_common.html#maxconnectionsperchild">MaxConnectionsPerChild</a></code>, quel
+    que soit le nombre de requêtes transmises via cette connexion.</p>
+
+<h3>Voir aussi</h3>
+<ul>
+<li><code class="directive"><a href="#maxkeepaliverequests">MaxKeepAliveRequests</a></code></li>
+</ul>
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="KeepAliveTimeout" id="KeepAliveTimeout">KeepAliveTimeout</a> <a name="keepalivetimeout" id="keepalivetimeout">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Durée pendant laquelle le serveur va attendre une requête
+avant de fermer une connexion persistante</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>KeepAliveTimeout <var>nombre</var>[ms]</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>KeepAliveTimeout 5</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>La spécification d'une valeur en millisecondes est
+possible depuis les versions 2.3.2 et supérieures d'Apache httpd</td></tr>
+</table>
+    <p>Le nombre de secondes pendant lesquelles Apache httpd va attendre une
+    requête avant de fermer la connexion. Le délai peut être défini en
+    millisecondes en suffixant sa valeur par ms. La valeur du délai
+    spécifiée par la directive <code class="directive"><a href="#timeout">Timeout</a></code> s'applique dès qu'une requête a
+    été reçue.</p>
+
+    <p>Donner une valeur trop élévée à
+    <code class="directive">KeepAliveTimeout</code> peut induire des problèmes
+    de performances sur les serveurs fortement chargés. Plus le délai
+    est élévé, plus nombreux seront les processus serveur en attente de
+    requêtes de la part de clients inactifs.</p>
+
+    <p>Dans un contexte de serveur virtuel à base de nom, c'est
+    la valeur de la paire adresse IP/port du serveur virtuel qui
+    correspond le mieux qui sera utilisée.</p>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="Limit" id="Limit">&lt;Limit&gt;</a> <a name="limit" id="limit">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Limite les contrôles d'accès que la section contient à
+certaines méthodes HTTP</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;Limit <var>méthode</var> [<var>méthode</var>] ... &gt; ...
+    &lt;/Limit&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>AuthConfig, Limit</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Les contrôles d'accès s'appliquent normalement à
+    <strong>toutes</strong> les méthodes d'accès, et c'est en général le
+    comportement souhaité. <strong>Dans le cas général, les directives
+    de contrôle d'accès n'ont pas à être placées dans une section
+    <code class="directive">&lt;Limit&gt;</code>.</strong></p>
+
+    <p>La directive <code class="directive">&lt;Limit&gt;</code> a pour
+    but de limiter les effets des contrôles d'accès aux méthodes HTTP
+    spécifiées. Pour toutes les autres méthodes, les restrictions
+    d'accès contenues dans la section <code class="directive">&lt;Limit&gt;</code> <strong>n'auront aucun
+    effet</strong>. L'exemple suivant n'applique les contrôles d'accès
+    qu'aux méthodes <code>POST</code>, <code>PUT</code>, et
+    <code>DELETE</code>, en laissant les autres méthodes sans protection
+    :</p>
+
+    <div class="example"><p><code>
+      &lt;Limit POST PUT DELETE&gt;<br />
+      <span class="indent">
+        Require valid-user<br />
+      </span>
+      &lt;/Limit&gt;
+    </code></p></div>
+
+    <p>La liste des noms de méthodes peut contenir une ou plusieurs
+    valeurs parmi les suivantes : <code>GET</code>, <code>POST</code>,
+    <code>PUT</code>, <code>DELETE</code>, <code>CONNECT</code>,
+    <code>OPTIONS</code>, <code>PATCH</code>, <code>PROPFIND</code>,
+    <code>PROPPATCH</code>, <code>MKCOL</code>, <code>COPY</code>,
+    <code>MOVE</code>, <code>LOCK</code>, et <code>UNLOCK</code>.
+    <strong>Le nom de méthode est sensible à la casse.</strong> Si la
+    valeur <code>GET</code> est présente, les requêtes <code>HEAD</code>
+    seront aussi concernées. La méthode <code>TRACE</code> ne peut pas
+    être limitée (voir la directive <code class="directive"><a href="#traceenable">TraceEnable</a></code>).</p>
+
+    <div class="warning">Une section <code class="directive">&lt;LimitExcept&gt;</code> doit toujours être préférée à
+    une section <code class="directive">&lt;Limit&gt;</code> pour la
+    restriction d'accès, car une section <code class="directive"><a href="#limitexcept">&lt;LimitExcept&gt;</a></code> fournit une protection contre
+    les méthodes arbitraires.</div>
+
+    <p>Les directives <code class="directive">&lt;Limit&gt;</code> et
+    <code class="directive"><a href="#limitexcept">&lt;LimitExcept&gt;</a></code>
+    peuvent être imbriquées. Dans ce cas, pour chaque niveau des
+    directives <code class="directive">&lt;Limit&gt;</code> ou  <code class="directive"><a href="#limitexcept">&lt;LimitExcept&gt;</a></code>, ces dernières
+    doivent restreindre l'accès pour les méthodes auxquelles les
+    contrôles d'accès s'appliquent.</p>
+
+    <div class="warning">Lorsqu'on utilise les directives <code class="directive">&lt;Limit&gt;</code> ou <code class="directive">&lt;LimitExcept&gt;</code> avec la directive <code class="directive"><a href="../mod/mod_authz_core.html#require">Require</a></code>, la première directive
+    <code class="directive"><a href="../mod/mod_authz_core.html#require">Require</a></code> dont la
+    condition est satisfaite autorise la requête, sans tenir compte de
+    la présence d'autres directives <code class="directive"><a href="../mod/mod_authz_core.html#require">Require</a></code>.</div>
+
+    <p>Par exemple, avec la configuration suivante, tous les
+    utilisateurs seront autorisés à effectuer des requêtes
+    <code>POST</code>, et la directive <code>Require group
+    editors</code> sera ignorée dans tous les cas :</p>
+
+    <div class="example"><p><code>
+      &lt;LimitExcept GET&gt;
+      <span class="indent">
+        Require valid-user
+      </span>
+      &lt;/LimitExcept&gt;<br />
+      &lt;Limit POST&gt;
+      <span class="indent">
+        Require group editors
+      </span>
+      &lt;/Limit&gt;
+    </code></p></div>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitExcept" id="LimitExcept">&lt;LimitExcept&gt;</a> <a name="limitexcept" id="limitexcept">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Applique les contrôles d'accès à toutes les méthodes HTTP,
+sauf celles qui sont spécifiées</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;LimitExcept <var>méthode</var> [<var>méthode</var>] ... &gt; ...
+    &lt;/LimitExcept&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>AuthConfig, Limit</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p><code class="directive">&lt;LimitExcept&gt;</code> et
+    <code>&lt;/LimitExcept&gt;</code> permettent de regrouper des
+    directives de contrôle d'accès qui s'appliqueront à toutes les
+    méthodes d'accès HTTP qui ne font <strong>pas</strong> partie de la
+    liste des arguments ; en d'autres termes, elles ont un comportement
+    opposé à celui de la section <code class="directive"><a href="#limit">&lt;Limit&gt;</a></code>, et on peut les utiliser pour
+    contrôler aussi bien les méthodes standards que les méthodes non
+    standards ou non reconnues. Voir la documentation de la section
+    <code class="directive"><a href="#limit">&lt;Limit&gt;</a></code> pour plus
+    de détails.</p>
+
+    <p>Par exemple :</p>
+
+    <div class="example"><p><code>
+      &lt;LimitExcept POST GET&gt;<br />
+      <span class="indent">
+        Require valid-user<br />
+      </span>
+      &lt;/LimitExcept&gt;
+    </code></p></div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitInternalRecursion" id="LimitInternalRecursion">LimitInternalRecursion</a> <a name="limitinternalrecursion" id="limitinternalrecursion">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Détermine le nombre maximal de redirections internes et de
+sous-requêtes imbriquées</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitInternalRecursion <var>nombre</var> [<var>nombre</var>]</code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitInternalRecursion 10</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+<tr><th><a href="directive-dict.html#Compatibility">Compatibilité:</a></th><td>Disponible à partir de la version 2.0.47 d'Apache httpd</td></tr>
+</table>
+    <p>Une redirection interne survient, par exemple, quand on utilise
+    la directive <code class="directive"><a href="../mod/mod_actions.html#action">Action</a></code> qui
+    redirige en interne la requête d'origine vers un script CGI. Une
+    sous-requête est le mécanisme qu'utilise Apache httpd pour déterminer ce
+    qui se passerait pour un URI s'il faisait l'objet d'une requête. Par
+    exemple, <code class="module"><a href="../mod/mod_dir.html">mod_dir</a></code> utilise les sous-requêtes pour
+    rechercher les fichiers listés dans la directive <code class="directive"><a href="../mod/mod_dir.html#directoryindex">DirectoryIndex</a></code>.</p>
+
+    <p>La directive <code class="directive">LimitInternalRecursion</code> permet
+    d'éviter un crash du serveur dû à un bouclage infini de redirections
+    internes ou de sous-requêtes. De tels bouclages sont dus en général
+    à des erreurs de configuration.</p>
+
+    <p>La directive accepte, comme arguments, deux limites qui sont
+    évaluées à chaque requête. Le premier <var>nombre</var> est le
+    nombre maximum de redirections internes qui peuvent se succéder. Le
+    second <var>nombre</var> détermine la profondeur d'imbrication
+    maximum des sous-requêtes. Si vous ne spécifiez qu'un seul
+    <var>nombre</var>, il sera affecté aux deux limites.</p>
+
+    <div class="example"><h3>Exemple</h3><p><code>
+      LimitInternalRecursion 5
+    </code></p></div>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitRequestBody" id="LimitRequestBody">LimitRequestBody</a> <a name="limitrequestbody" id="limitrequestbody">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>limite la taille maximale du corps de la requête HTTP
+envoyée par le client</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitRequestBody <var>octets</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitRequestBody 0</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Cette directive spécifie la taille maximale autorisée pour le
+    corps d'une requête ; la valeur de l'argument <var>octets</var> va
+    de 0 (pour une taille illimitée), à 2147483647 (2Go). Voir la note
+    ci-dessous pour la limite d'applicabilité aux requêtes mandatées.</p>
+
+    <p>La directive <code class="directive">LimitRequestBody</code> permet de
+    définir une limite pour la taille maximale autorisée du corps d'une
+    requête HTTP en tenant compte du contexte dans lequel la directive
+    a été placée (c'est à dire au niveau du serveur, d'un répertoire,
+    d'un fichier ou d'une localisation). Si la requête du client dépasse
+    cette limite, le serveur répondra par un message d'erreur et ne
+    traitera pas la requête. La taille du corps d'une requête normale va
+    varier de manière importante en fonction de la nature de la
+    ressource et des méthodes autorisées pour cette dernière. Les
+    scripts CGI utilisent souvent le corps du message pour extraire les
+    informations d'un formulaire. Les implémentations de la méthode
+    <code>PUT</code> nécessitent une valeur au moins aussi élevée que la
+    taille maximale des représentations que le serveur désire accepter
+    pour cette ressource.</p>
+
+    <p>L'administrateur du serveur peut utiliser cette directive pour
+    contrôler plus efficacement les comportements anormaux des requêtes
+    des clients, ce qui lui permettra de prévenir certaines formes
+    d'attaques par déni de service.</p>
+
+    <p>Si par exemple, vous autorisez le chargement de fichiers vers une
+    localisation particulière, et souhaitez limiter la taille des
+    fichiers chargés à 100Ko, vous pouvez utiliser la directive suivante
+    :</p>
+
+    <div class="example"><p><code>
+      LimitRequestBody 102400
+    </code></p></div>
+
+    <div class="note"><p>Pour une description détaillée de la manière dont cette
+    directive est interprétée par les requêtes mandatées, voir la
+    documentation du module <code class="module"><a href="../mod/mod_proxy.html">mod_proxy</a></code>.</p>
+    </div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitRequestFields" id="LimitRequestFields">LimitRequestFields</a> <a name="limitrequestfields" id="limitrequestfields">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Limite le nombre de champs d'en-tête autorisés dans une
+requête HTTP</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitRequestFields <var>nombre</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitRequestFields 100</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p><var>nombre</var> est un entier de 0 (nombre de champs illimité)
+    à 32767. La valeur par défaut est définie à la compilation par la
+    constante <code>DEFAULT_LIMIT_REQUEST_FIELDS</code> (100 selon la
+    distribution).</p>
+
+    <p>La directive <code class="directive">LimitRequestFields</code> permet à
+    l'administrateur du serveur de modifier le nombre maximum de champs
+    d'en-tête autorisés dans une requête HTTP. Pour un serveur, cette
+    valeur doit être supérieure au nombre de champs qu'une requête
+    client normale peut contenir. Le nombre de champs d'en-tête d'une
+    requête qu'un client utilise dépasse rarement 20, mais ce nombre
+    peut varier selon les implémentations des clients, et souvent en
+    fonction des extensions que les utilisateurs configurent dans leurs
+    navigateurs pour supporter la négociation de contenu détaillée. Les
+    extensions HTTP optionnelles utilisent souvent les
+    champs d'en-tête des requêtes.</p>
+
+    <p>L'administrateur du serveur peut utiliser cette directive pour
+    contrôler plus efficacement les comportements anormaux des requêtes
+    des clients, ce qui lui permettra de prévenir certaines formes
+    d'attaques par déni de service. La valeur spécifiée doit être
+    augmentée si les clients standards reçoivent une erreur du serveur
+    indiquant que la requête comportait un nombre d'en-têtes trop
+    important.</p>
+
+    <p>Par exemple :</p>
+
+    <div class="example"><p><code>
+      LimitRequestFields 50
+    </code></p></div>
+
+    <div class="warning"><h3>Avertissement</h3>
+     <p>Dans le cas des serveurs virtuels à base de noms, la valeur de
+     cette directive est extraite du serveur virtuel par défaut (le
+     premier de la liste) pour la paire adresse IP/port.</p>
+    </div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitRequestFieldSize" id="LimitRequestFieldSize">LimitRequestFieldSize</a> <a name="limitrequestfieldsize" id="limitrequestfieldsize">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Dédinit la taille maximale autorisée d'un en-tête de
+requête HTTP</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitRequestFieldSize <var>octets</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitRequestFieldSize 8190</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Cette directive permet de définir le nombre maximum
+    d'<var>octets</var> autorisés dans un en-tête de requête HTTP.</p>
+
+    <p>La directive <code class="directive">LimitRequestFieldSize</code> permet
+    à l'administrateur du serveur de définir la taille
+    maximale autorisée d'un en-tête de requête HTTP. Pour un serveur,
+    cette valeur doit être suffisamment grande pour contenir tout
+    en-tête d'une requête client normale. La taille d'un champ d'en-tête
+    de requête normal va varier selon les implémentations des clients,
+    et en fonction des extensions que les utilisateurs
+    configurent dans leurs navigateurs pour supporter la négociation de
+    contenu détaillée. Les en-têtes d'authentification SPNEGO peuvent
+    atteindre une taille de 12392 octets.</p>
+
+    <p>&gt;L'administrateur du serveur peut utiliser cette directive pour
+    contrôler plus efficacement les comportements anormaux des requêtes
+    des clients, ce qui lui permettra de prévenir certaines formes
+    d'attaques par déni de service.</p>
+
+    <p>Par exemple ::</p>
+
+    <div class="example"><p><code>
+      LimitRequestFieldSize 4094
+    </code></p></div>
+
+    <div class="note">Dans des conditions normales, la valeur par défaut de cette
+    directive ne doit pas être modifiée. En outre, vous ne
+    pouvez pas spécifier une valeur supérieure à 8190 sans modifier le
+    code source et recompiler.</div>
+
+    <div class="warning"><h3>Avertissement</h3>
+     <p>Dans le cas des serveurs virtuels à base de noms, la valeur de
+     cette directive est extraite du serveur virtuel par défaut (le
+     premier de la liste) pour lequel la paire adresse IP/port
+     correspond le mieux.</p>
+    </div>
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitRequestLine" id="LimitRequestLine">LimitRequestLine</a> <a name="limitrequestline" id="limitrequestline">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Définit la taille maximale d'une ligne de requête
+HTTP</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitRequestLine <var>octets</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitRequestLine 8190</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Cette directive permet de définir la taille maximale autorisée
+    pour une ligne de requête HTTP en <var>octets</var>.</p>
+
+    <p>La directive <code class="directive">LimitRequestLine</code> permet à
+    l'administrateur du serveur de définir la taille
+    maximale autorisée d'une ligne de requête HTTP client. Comme une
+    requête comporte une méthode HTTP, un URI, et une version de
+    protocole, la directive <code class="directive">LimitRequestLine</code>
+    impose une restriction sur la longueur maximale autorisée pour un
+    URI dans une requête au niveau du serveur. Pour un serveur, cette
+    valeur doit être suffisamment grande pour référencer les noms de
+    toutes ses ressources, y compris toutes informations pouvant être
+    ajoutées dans la partie requête d'une méthode <code>GET</code>.</p>
+
+    <p>L'administrateur du serveur peut utiliser cette directive pour
+    contrôler plus efficacement les comportements anormaux des requêtes
+    des clients, ce qui lui permettra de prévenir certaines formes
+    d'attaques par déni de service.</p>
+
+    <p>Par exemple :</p>
+
+    <div class="example"><p><code>
+      LimitRequestLine 4094
+    </code></p></div>
+
+    <div class="note">Dans des conditions normales, la valeur par défaut de cette
+    directive ne doit pas être modifiée. En outre, vous ne
+    pouvez pas spécifier une valeur supérieure à 8190 sans modifier le
+    code source et recompiler.</div>
+
+    <div class="warning"><h3>Avertissement</h3>
+     <p>Dans le cas des serveurs virtuels à base de noms, la valeur de
+     cette directive est extraite du serveur virtuel par défaut (le
+     premier de la liste) pour lequel la paire adresse IP/port
+     correspond le mieux.</p>
+    </div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="LimitXMLRequestBody" id="LimitXMLRequestBody">LimitXMLRequestBody</a> <a name="limitxmlrequestbody" id="limitxmlrequestbody">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>Définit la taille maximale du corps d'une requête au format
+XML</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>LimitXMLRequestBody <var>octets</var></code></td></tr>
+<tr><th><a href="directive-dict.html#Default">Défaut:</a></th><td><code>LimitXMLRequestBody 1000000</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel, répertoire, .htaccess</td></tr>
+<tr><th><a href="directive-dict.html#Override">AllowOverride:</a></th><td>All</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>Taille maximale (en octets) du corps d'une requête au format XML.
+    Une valeur de <code>0</code> signifie qu'aucune limite n'est
+    imposée.</p>
+
+    <p>Exemple :</p>
+
+    <div class="example"><p><code>
+      LimitXMLRequestBody 0
+    </code></p></div>
+
+
+</div>
+<div class="top"><a href="#page-header"><img alt="top" src="../images/up.gif" /></a></div>
+<div class="directive-section"><h2><a name="Location" id="Location">&lt;Location&gt;</a> <a name="location" id="location">Directive</a></h2>
+<table class="directive">
+<tr><th><a href="directive-dict.html#Description">Description:</a></th><td>N'applique les directives contenues qu'aux URLs
+spécifiées</td></tr>
+<tr><th><a href="directive-dict.html#Syntax">Syntaxe:</a></th><td><code>&lt;Location
+    <var>chemin URL</var>|<var>URL</var>&gt; ... &lt;/Location&gt;</code></td></tr>
+<tr><th><a href="directive-dict.html#Context">Contexte:</a></th><td>configuration du serveur, serveur virtuel</td></tr>
+<tr><th><a href="directive-dict.html#Status">Statut:</a></th><td>Core</td></tr>
+<tr><th><a href="directive-dict.html#Module">Module:</a></th><td>core</td></tr>
+</table>
+    <p>La directive <code class="directive">&lt;Location&gt;</code>
+    limite la portée des directives contenues aux URLs définies par
+    l'argument URL. Elle est similaire à la directive <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code>, et marque le
+    début d'une section qui se termine par une directive
+    <code>&lt;/Location&gt;</code>. Les sections <code class="directive">&lt;Location&gt;</code> sont traitées selon l'ordre dans
+    lequel elles apparaissent dans le fichier de configuration, mais
+    après les sections <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> et la lecture des
+    fichiers <code>.htaccess</code>, et après les sections <code class="directive"><a href="#files">&lt;Files&gt;</a></code>.</p>
+
+    <p>Les sections <code class="directive">&lt;Location&gt;</code>
+    agissent complètement en dehors du système de fichiers. Ceci a de
+    nombreuses conséquences. Parmi les plus importantes, on ne doit pas
+    utiliser les sections <code class="directive">&lt;Location&gt;</code>
+    pour contrôler l'accès aux répertoires du système de fichiers. Comme
+    plusieurs URLs peuvent correspondre au même répertoire du système de
+    fichiers, un tel contrôle d'accès pourrait être contourné.</p>
+
+    <p>Les directives que contient cette section seront appliquées aux
+    requêtes si la partie chemin de l'URL satisfait à l'un au moins de
+    ces critères :
+    </p>
+    <ul>
+      <li>Le chemin spécifié correspond exactement à la partie chemin de
+      l'URL.
+      </li>
+      <li>Le chemin spécifié, qui se termine par un slash, est un
+      préfixe de la partie chemin de l'URL (traité comme une racine du
+      contexte).
+      </li>
+      <li>Le chemin spécifié, si on lui ajoute un slash de fin, est un
+      préfixe de la partie chemin de l'URL (aussi traité comme une racine du
+      contexte).
+      </li>
+    </ul>
+    <p>
+    Dans l'exemple ci-dessous, où aucun slash de fin n'est utilisé, les
+    directives contenues dans la section s'appliqueront à /private1,
+    /private1/ et /private1/file.txt, mais pas à /private1other. 
+    </p>
+    <div class="example"><p><code>
+      &lt;Location /private1&gt;
+          ...
+    </code></p></div>
+    <p>
+    De même, dans l'exemple ci-dessous, où l'on utilise un slash de fin, les
+    directives contenues dans la section s'appliqueront à /private2/ et
+    à /private2/file.txt, mais pas à /private2other.
+    </p>
+    <div class="example"><p><code>
+      &lt;Location /private2<em>/</em>&gt;
+          ...
+    </code></p></div>
+    
+    <div class="note"><h3>Quand utiliser la section <code class="directive">&lt;Location&gt;</code></h3>
+
+    <p>Vous pouvez utiliser une section <code class="directive">&lt;Location&gt;</code> pour appliquer des directives à
+    des contenus situés en dehors du système de fichiers. Pour les
+    contenus situés à l'intérieur du système de fichiers, utilisez
+    plutôt les sections <code class="directive"><a href="#directory">&lt;Directory&gt;</a></code> et <code class="directive"><a href="#files">&lt;Files&gt;</a></code>. <code>&lt;Location
+    /&gt;</code> constitue une exception et permet d'appliquer aisément
+    une configuration à l'ensemble du serveur.</p>
+    </div>
+
+    <p>Pour toutes les requêtes originales (non mandatées), l'argument
+    URL est un chemin d'URL de la forme
+    <code>/chemin/</code>. <em>Aucun protocole, nom d'hôte, port, ou chaîne
+    de requête ne doivent apparaître.</em> Pour les requêtes mandatées, l'URL
+    spécifiée doit être de la forme
+    <code>protocole://nom_serveur/chemin</code>, et vous devez inclure
+    le préfixe.</p>
+
+    <p>L'URL peut contenir des caractères génériques. Dans une chaîne
+    avec caractères génériques, <code>?</code> correspond à un caractère
+    quelconque, et <code>*</code> à toute chaîne de caractères. Les
+    caractères génériques ne peuvent pas remplacer un / dans le chemin
+    URL.</p>
+
+    <p>On peut aussi utiliser les <a class="glossarylink" href="../glossary.html#regex" title="voir glossaire">Expressions
+    rationnelles</a>, moyennant l'addition d'un caractère
+    <code>~</code>. Par exemple :</p>
+
+    <div class="example"><p><code>
+      &lt;Location ~ "/(extra|special)/da

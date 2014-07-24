@@ -1,0 +1,7 @@
+	GetDataBack - FAT & NTFS
+
+1.- Ejecutar el "GetDataBack Setup.exe" y seguir los pasos de instalación.
+2.- Dar doble click en el archivo "REG_Crack.exe" dentro de la carpeta Crack.
+3.- Ejecuta y disfruta del programa.
+
+Visita: http://blogdecesargabriel.blogspot.com
