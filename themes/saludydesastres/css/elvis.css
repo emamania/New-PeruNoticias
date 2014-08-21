@@ -1,0 +1,270 @@
+/*=============================================== 01. HEADER STYLES ===============================================*/
+
+article, aside, details, figcaption, figure, footer, header, hgroup, nav, section { display: block; }
+
+header {
+  background:#5b89a3;
+}
+
+header {
+  /*background-image:url(../images/header-top.png);*/
+  background-position:0 100%;
+  background-repeat:repeat-x;
+}
+
+header, a.secondary-button, .notification-listing {
+  background-color:#6FBFEC;
+}
+/* -------------------- A. HEADER CONTAINER STYLES -------------------- */
+
+header {background-image:url(../images/header-bg.png); background-position: bottom left; background-repeat: repeat-x; }
+.header-border-top {background:url(../images/header-border-top.png) top left repeat-x; height:1px; padding-top:4px;}
+.header-border-bottom {background:url(../images/header-border-bottom.png); height:5px;}
+
+
+/* -------------------- B. HEADER MISC STYLES -------------------- */
+.width-container {width:940px; margin: 0 auto;}
+.lt-ie9 #logo {max-width:50% !important; }
+body #logo {float:left; margin:0px; padding:0px; border:none;background:none;}
+body #logo img {max-width:50%; height: auto;}
+.header-top-left {float:left; font-size:13px; color:#fff; text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.35);}
+.header-top-left a {color:#fff;}
+.social-icons a {background:#fff;}
+.header-top-left a:hover {color:#ddd;}
+.social-icons a:hover {background:#ddd;}
+.width-container .social-icons {float:right;}
+span.phone-header-top {position:relative;  top:2px;  background:url(images/phone-header-top.png) 0px 0px no-repeat; padding:2px 10px 3px 22px;}
+a.email-header-top { position:relative;  top:2px;  text-decoration:none; background:url(images/email-header-top.png) 0px 0px no-repeat; padding:3px 0px 3px 23px;}
+
+/*
+=============================================== 02. NAVIGATION ===============================================
+*/
+/* -------------------- A. ESSENTIAL STYLES -------------------- */
+/*** ESSENTIAL STYLES ***/
+nav select {display:none;}
+.sf-menu, .sf-menu * {margin:0; padding:0; list-style:none;}
+.sf-menu {line-height:	1.0;}
+.sf-menu ul {position:	absolute; top:-999em;  width: 10em; /* left offset of submenus need to match (see below) */}
+.sf-menu ul li {width: 100%;}
+.sf-menu li:hover {visibility:		inherit; /* fixes IE7 'sticky bug' */}
+.sf-menu li {float:			left ;position:		relative;}
+.sf-menu a {display:block;  position:relative;}
+.sf-menu li:hover ul, .sf-menu li.sfHover ul {left:	0; top:65px; /* match top ul list item height */z-index: 99;}
+ul.sf-menu li:hover li ul, ul.sf-menu li.sfHover li ul {top:-999em;}
+ul.sf-menu li li:hover ul, ul.sf-menu li li.sfHover ul {left: 10em; /* match ul width */ top:0;}
+ul.sf-menu li li:hover li ul, ul.sf-menu li li.sfHover li ul {top: -999em;}
+ul.sf-menu li li li:hover ul, ul.sf-menu li li li.sfHover ul {left:10em; /* match ul width */ top:0;}
+
+/* -------------------- B. RESIZING MENU -------------------- */
+nav {padding-top:18px; }
+.sf-menu a { padding:11px 14px 9px 14px;}  /* Top Menu Size */
+.sf-menu li:hover ul, .sf-menu li.sfHover ul {top:45px;} /* Move sub-menu down */
+
+/* -------------------- C. DEMO SKIN -------------------- */
+header .width-container {position:relative;}
+nav {float:right; position:absolute; right:0px; z-index:555;}
+.lt-ie8 nav {float:right; position:static; }
+.sf-menu a {
+	-webkit-transition-duration: 150ms;
+	-webkit-transition-property: color;
+	-webkit-transition-timing-function: ease-in-out;
+	-moz-transition-duration: 150ms;
+	-moz-transition-property: color;
+	-moz-transition-timing-function: ease-in-out;
+	-o-transition-duration: 150ms;
+	-o-transition-property: color;
+	-o-transition-timing-function: ease-in-out; 
+}
+ /* DEFAULT LINK  */
+.sf-menu a, .sf-menu a:visited  {
+	margin-left:6px;
+	font-size:15px;
+	color:#fff;
+	text-decoration:none;
+	line-height:1;
+	text-transform:uppercase;
+	text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.35);
+	border:1px solid rgba(0, 0, 0, 0); 
+}
+ /* DEFAULT LINK HOVER AND SELETED  */
+.sf-menu li.current-menu-item a, .sf-menu li.current-menu-item a:visited {
+	border-top:1px solid rgba(0, 0, 0, .4); 
+	border-left:1px solid rgba(0, 0, 0, .5);
+	border-right:1px solid rgba(0, 0, 0, .5);
+	border-bottom:1px solid rgba(0, 0, 0, .7);
+	-moz-box-sizing: padding-box;
+	-webkit-background-clip: padding-box; /* for Safari */
+	background-clip: padding-box;
+	background-image:url(images/navigation-hover.png);
+	background-repeat:repeat-x;
+	background-position:top left;
+	-webkit-border-radius: 3px; -moz-border-radius: 3px; border-radius: 3px;
+}
+	
+ /* HOVER BACKGROUND  */
+.sf-menu a:hover, .sf-menu li a:hover, .sf-menu a:hover, .sf-menu a:visited:hover, .sf-menu li.sfHover a, .sf-menu li.sfHover a:visited {
+	border-top:1px solid rgba(0, 0, 0, .4); 
+	border-left:1px solid rgba(0, 0, 0, .5);
+	border-right:1px solid rgba(0, 0, 0, .5);
+	border-bottom:1px solid rgba(0, 0, 0, .7);
+	-moz-box-sizing: padding-box;
+	-webkit-background-clip: padding-box; /* for Safari */
+	background-clip: padding-box;
+	background-image:url(images/navigation-hover.png);
+	background-repeat:repeat-x;
+	background-position:top left;
+	-webkit-border-radius: 3px; -moz-border-radius: 3px; border-radius: 3px;
+}
+
+.sf-menu li.sfHover li a, .sf-menu li.sfHover li a:visited, .sf-menu li.sfHover li li a, .sf-menu li.sfHover li li a:visited, .sf-menu li.sfHover li li li a, .sf-menu li.sfHover li li li a:visited, .sf-menu li.sfHover li li li li a, .sf-menu li.sfHover li li li li a:visited {
+	font-size:14px;
+	text-transform:none;
+	border:none;
+	margin:0px;
+	background:transparent;
+	webkit-border-radius: 0px; -moz-border-radius: 0px; border-radius: 0px;
+}
+
+
+.sf-menu li li:hover, .sf-menu li li.sfHover, .sf-menu li li a:focus, .sf-menu li li a:hover, .sf-menu li li a:active, .sf-menu li li.sfHover a, .sf-menu li.sfHover li a:visited:hover, .sf-menu li li:hover a:visited,
+.sf-menu li li li:hover, .sf-menu li li li.sfHover, .sf-menu li li li a:focus, .sf-menu li li li a:hover, .sf-menu li li li a:active, .sf-menu li li li.sfHover a, .sf-menu li li.sfHover li a:visited:hover, .sf-menu li li li:hover a:visited,
+.sf-menu li li li li:hover, .sf-menu li li li li.sfHover, .sf-menu li li li li a:focus, .sf-menu li li li li a:hover, .sf-menu li li li li a:active, .sf-menu li li li li.sfHover a, .sf-menu li li li.sfHover li a:visited:hover, .sf-menu li li li li:hover a:visited,
+.sf-menu li li li li li:hover, .sf-menu li li li li li.sfHover, .sf-menu li li li li li a:focus, .sf-menu li li li li li a:hover, .sf-menu li li li li li a:active, .sf-menu li li li li li.sfHover a, .sf-menu li li li li.sfHover li a:visited:hover, .sf-menu li li li li li:hover a:visited  {
+	outline: 0;
+	background-color: rgba(255,255,255,.05);
+}
+
+
+.sf-menu ul, .sf-menu ul ul, .sf-menu ul ul ul {
+	-webkit-border-radius: 4px; -moz-border-radius: 4px; border-radius: 4px;
+	-moz-box-shadow: inset 0 0 0px 1px rgba(0, 0, 0, 0.25);
+	-webkit-box-shadow: inset 0 0 0px 1px rgba(0, 0, 0, 0.25);
+	box-shadow: inset 0 0 0px 1px rgba(0, 0, 0, 0.25);
+	margin-left:2px;
+}
+.sf-menu ul {margin-left:4px;}
+.sf-menu ul:after {
+	content: "";
+	position: absolute;
+	top: -4px;
+	left: 10px;
+	width: 0; 
+	height: 0; 
+	border-left: 5px solid transparent;
+	border-right: 5px solid transparent;
+	border-bottom: 5px solid black;
+	z-index: 100;
+}
+.sf-menu ul:before {
+	content: "";
+	position: absolute;
+	top: -5px;
+	left: 8px;
+	width: 0; 
+	height: 0; 
+	border-left: 6px solid transparent;
+	border-right: 6px solid transparent;
+	border-bottom: 6px solid rgba(0, 0, 0, .4);
+	z-index: 100;
+}
+.sf-menu ul ul:before, .sf-menu ul ul u:before, .sf-menu ul ul:after, .sf-menu ul ul u:after {display:none;}
+
+
+
+.sf-menu li li, .sf-menu li li li, .sf-menu li li li li, .sf-menu li li li li li { margin:0px;   }
+
+
+/*** arrows **/
+.sf-menu a.sf-with-ul {padding-right: 	2.25em;	min-width:		1px; /* trigger IE7 hasLayout so spans position accurately */}
+.sf-sub-indicator {
+	position:		absolute;
+	display:		block;
+	right:			.75em;
+	top:			1.05em; /* IE6 only */
+	width:			10px;
+	height:			10px;
+	text-indent: 	-9999em;
+	overflow:		hidden;
+	background:		url('images/arrows-ffffff.png') no-repeat -10px -100px; /* 8-bit indexed alpha png. IE6 gets solid image only */
+}
+a > .sf-sub-indicator {  /* give all except IE6 the correct values */ top:			.8em; background-position: 0 -100px; /* use translucent arrow for modern browsers*/}
+/* apply hovers to modern browsers */
+a:focus > .sf-sub-indicator, a:hover > .sf-sub-indicator, a:active > .sf-sub-indicator, li:hover > a > .sf-sub-indicator, li.sfHover > a > .sf-sub-indicator {background-position: -10px -100px; /* arrow hovers for modern browsers*/}
+
+/* point right for anchors in subs */
+.sf-menu ul .sf-sub-indicator { background-position:  -10px 0; }
+.sf-menu ul a > .sf-sub-indicator { background-position:  0 0; }
+/* apply hovers to modern browsers */
+.sf-menu ul a:focus > .sf-sub-indicator, .sf-menu ul a:hover > .sf-sub-indicator, .sf-menu ul a:active > .sf-sub-indicator, .sf-menu ul li:hover > a > .sf-sub-indicator, .sf-menu ul li.sfHover > a > .sf-sub-indicator { background-position: -10px 0; /* arrow hovers for modern browsers*/}
+
+/*** shadows for all but IE6 ***/
+.sf-shadow ul { background:	url('images/shadow.png') no-repeat bottom right; padding: 0 8px 9px 0; -moz-border-radius-bottomleft: 17px; -moz-border-radius-topright: 17px; -webkit-border-top-right-radius: 17px; -webkit-border-bottom-left-radius: 17px;}
+.sf-shadow ul.sf-shadow-off {background: transparent;}
+
+/*=============================================== 04. Contenido ===============================================
+/* -------------------- D. MAIN CONTAINER STYLES -------------------- */
+#main {padding:24px 0px 28px 0px;}
+.lt-ie8 #main {padding-top:10px;}
+#container-sidebar {width:662px; float:right; }
+#featured-slider, .content-boxed, h2.title-bg, .secondary-slider, #map-contact, #map-listing {
+	border-left:1px solid #c4c4c4; 
+	border-top:1px solid #cccccc;
+	border-right:1px solid #c4c4c4;
+	border-bottom:1px solid #c5c5c5;
+	background:#fff;  
+	-moz-border-radius: 3px; -webkit-border-radius: 3px; border-radius: 3px;
+	-moz-box-shadow: 0px 1px 3px rgba(0,0,0,0.15); -webkit-box-shadow: 0px 1px 3px rgba(0,0,0,0.15); box-shadow: 0px 1px 3px rgba(0,0,0,0.15); 
+}
+body h2.title-bg {
+	border-bottom:1px solid #c5c5c5; border-top:0px; border-right:0px; border-left:0px;
+	background:#ffffff url(images/title-bg.png) bottom left repeat-x; 
+	padding:16px 20px 13px 20px; 
+	line-height:1; 
+	margin:0px -20px 15px -20px; 
+	-moz-border-top-left-radius: 3px; -webkit-border-top-left-radius: 3px; border-top-left-radius: 3px; -moz-border-top-right-radius: 3px; -webkit-border-top-right-radius: 3px; border-top-right-radius: 3px;
+	-moz-border-bottom-left-radius: 30x; -webkit-border-bottom-left-radius: 3px; border-bottom-left-radius: 0px; -moz-border-bottom-right-radius: 0px; -webkit-border-bottom-right-radius: 0px; border-bottom-right-radius: 0px;
+	-moz-box-shadow: 0px 1px 2px rgba(0,0,0,0.11); -webkit-box-shadow: 0px 1px 2px rgba(0,0,0,0.11); box-shadow: 0px 1px 2px rgba(0,0,0,0.11); 
+}
+.content-boxed {padding:0px 20px 10px 20px; margin-bottom: 10px;}
+#featured-slider { padding:20px;  margin-bottom:24px; }
+.secondary-slider {
+	padding:10px;
+	
+}
+#map-contact {margin-bottom:18px;}
+#map-contact iframe {margin-bottom:-5px;}
+
+/* -------------------- E. SIDEBAR STYLES -------------------- */
+#sidebar {width:260px; float:left; }
+#sidebar .content-boxed {margin-bottom:24px;}
+#sidebar ul {margin:0px; padding:0px; list-style:none;}
+#sidebar ul li {padding:7px 0px 7px 14px; margin:0px; border-bottom:1px dotted #d7d7d7; background:url(images/sidebar-list.png) 0px 11px no-repeat; line-height:1.2;}
+#sidebar ul li:last-child {border:none;}
+#sidebar ul li:first-child {padding-top:0px; background-position:0px 4px;}
+
+#sidebar a, body #sidebar {color:#888888; margin-top: -10px;}
+#sidebar a:hover {color:#3b3b3b;}
+/*=============================================== 05. FOOTER STYLES ===============================================
+*/
+footer{background: #252425;}
+body footer, body footer a {color:#888888; }
+footer #copyright  a {color:#c5c5c5;}
+footer a:hover, footer #copyright a:hover {color:#ffffff;}
+footer h1, footer h2, footer h3, footer h4, footer h5, footer h6 {color:#fff; text-transform:uppercase; margin-bottom:5px;}
+footer .grid4column {margin-top:34px; margin-bottom:26px;}
+
+footer #copyright, footer a#scrollToTop {border-color:#585858;}
+#copyright {border-top:1px solid; padding:30px 0px;}
+a#scrollToTop {  background:url(images/back-to-top.png) 0px -11px no-repeat;  text-indent:-999999px; -webkit-transition-duration: 0ms; -moz-transition-duration: 0ms; -o-transition-duration: 0ms;
+	cursor: pointer; 
+	padding:30px 0px; 
+	margin:-30px 0px; 
+	width:82px;
+	display:block;  
+	float: right; 
+	border-right:1px solid; border-left:1px solid; }
+a#scrollToTop:hover {background-position:0px -125px;}
+footer ul {margin:0px; padding:0px; list-style:none;}
+footer ul li {padding:7px 0px 7px 14px; margin:0px; border-bottom:1px dotted #585858; background:url(images/footer-list.png) 0px 11px no-repeat; line-height:1.2;}
+footer ul li:last-child {border:none;}
+footer ul li:first-child {padding-top:5px; background-position:0px 9px;}
