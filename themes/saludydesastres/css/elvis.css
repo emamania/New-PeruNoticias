@@ -268,3 +268,122 @@ footer ul {margin:0px; padding:0px; list-style:none;}
 footer ul li {padding:7px 0px 7px 14px; margin:0px; border-bottom:1px dotted #585858; background:url(images/footer-list.png) 0px 11px no-repeat; line-height:1.2;}
 footer ul li:last-child {border:none;}
 footer ul li:first-child {padding-top:5px; background-position:0px 9px;}
+/***************************************************
+----- CONDICIONALES DE MEDIA QUERIES -----
+****************************************************/
+ 
+@media screen and (max-width: 980px) {
+ 
+    header {
+        width: 100%;
+    }
+	
+    #content {
+        width: 60%;
+        padding: 3% 4%;
+    }
+    figure.post-imagen img {
+    float: left;
+    margin: 5px;
+    max-width: 230px;
+    }
+    #sidebar {
+        width: 30%;
+    }
+    #sidebar .widget {
+        padding: 8% 7%;
+        margin-bottom: 10px;
+    }
+ 
+}
+
+@media screen and (max-width: 768px) {
+	body {
+        width: 100%;
+    }
+	nav{
+		margin-right: 20%;	
+	}	
+}
+ 
+@media screen and (max-width: 650px) {
+ 
+    nav{
+		margin-right: 35%;
+	}
+    #searchform {
+        position: absolute;
+        top: 5px;
+        right: 0;
+        z-index: 100;
+        height: 40px;
+    }
+    #searchform #s {
+        width: 70px;
+    }
+    #searchform #s:focus {
+        width: 150px;
+    }
+    #main-nav {
+        position: static;
+    }
+    #site-logo {
+        margin: 15px 100px 5px 0;
+        position: static;
+    }
+ 
+    /* site description */
+    #site-description {
+        margin: 0 0 15px;
+        position: static;
+        text-align: center;
+    }
+    #content {
+        width: auto;
+        float: none;
+        margin: 20px 0;
+    }
+    figure.post-imagen img {
+    float: left;
+    margin: 5px;
+    max-width: 180px;
+    }
+    #sidebar {
+        width: 100%;
+        margin: 0;
+        float: none;
+    }
+    #sidebar .widget {
+        padding: 3% 4%;
+        margin: 0 0 10px;
+    }
+ 
+}	
+ 
+@media screen and (max-width: 480px) {
+ 
+    html {
+        -webkit-text-size-adjust: none;
+    }
+	nav{
+		margin-right: 50%;
+	}
+	#featured-slider{
+		width:50%;
+	}
+    nav a {
+        font-size: 90%;
+        padding: 10px 8px;
+    }
+    figure.post-imagen img {
+    float: left;
+    margin: 5px;
+    max-width: 130px;
+    }
+ 
+}
+
+@media screen and (max-width: 320px) {
+	
+}
+/*- See more at: http://www.tutosytips.com/creando-un-diseno-responsive-design-con-css3-media-queries/#sthash.mssTKBz7.dpuf*/
