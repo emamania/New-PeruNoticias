@@ -703,7 +703,10 @@ fieldset ul li{
 /*Chat Olark*/
 
 #habla_expanded_div {
-	background-image: url(../images/bg-olark.png) !important;
+	background: url(../images/bg-olark1.png) !important;
+	background-position: 0px 235px!important;
+	margin-top: -50px!important;
+	height: 215px!important;
 }
 
 
@@ -723,7 +726,7 @@ margin-bottom:0
 }
 }*/
 .olrk-state-compressed #habla_both_div {
-	/*-webkit-animation-name: tab_in_bottom !important;*/
+	-webkit-animation-name: tab_in_bottom !important;
 	-webkit-animation-duration: 1s !important;
 	-webkit-animation-iteration-count: 1 !important;
 	-webkit-animation-direction: alternate !important;
@@ -731,9 +734,45 @@ margin-bottom:0
 }
 
  #habla_both_div,#habla_topbar_div, #olrk_tab_closure_span{
-	/*background-image: url(../images/bg-olark-topss.png) !important;*/
-	background-image: url(../images/bg-olark.png) !important;
+	/*background: url(../images/bg-olark-topss.png) !important;*/
+	background: url(../images/bg-olark1.png) !important;
+	margin-top: -2px!important;
+	background-position: 0px 59px!important;
 
 }
-#habla_both_div{margin-top: -2px!important;}
+#habla_topbar_div{
+	background:none!important;
+}
+#habla_topbar_div a{
+	margin-top:12px!important;
+}
+#habla_middle_wrapper_div{
+	height: 125px !important;
+	margin-top: 25px !important;
+}
+#habla_conversation_div {
+	height: 135px!important;	
+}
+form {
+	margin-top: 9px!important;
+	width:290px!important;
+}
+
+#habla_both_div{margin-top: -2px!important; background-position: 0px 57px!important;}
 #habla_offline_message_span{color:#F9F9F9 !important;}
+
+#olrk_tab_closure_span {
+ background: none!important; 
+}
+#habla_offline_body_input{
+	height: 45px!important;
+}
+
+#habla_window_div input[type=submit], #habla_window_div button {
+	
+	margin-right: 35px!important;
+}
+#habla_link_div{
+	margin: -25px 0 0 25px!important;
+	float: left!important;	
+}
